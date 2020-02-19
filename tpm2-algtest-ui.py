@@ -41,10 +41,6 @@ if __name__ == "__main__":
     stop_button = YUI.widgetFactory().createPushButton(bottom_buttons, "&STOP")
     exit_button = YUI.widgetFactory().createPushButton(bottom_buttons, "&EXIT")
 
-    text = YUI.widgetFactory().createRichText(vbox, "", True)
-    text.setText("Select the test type and press RUN to start.")
-    text.setAutoScrollDown(True)
-
     algtest_proc = None
     while True:
         ev = dialog.waitForEvent(10)
