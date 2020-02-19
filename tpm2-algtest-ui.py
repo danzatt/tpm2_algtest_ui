@@ -77,5 +77,5 @@ if __name__ == "__main__":
             line = algtest_proc.stdout.readline().decode("ascii")
             while line != "":
                 if 2 < len(line) <= 5 and line[-2] == "%":
-                    progress_bar.setValue(int(line[:-1]))
+                    progress_bar.setValue(int(line[:-2]))
                 line = algtest_proc.stdout.readline().decode("ascii")
