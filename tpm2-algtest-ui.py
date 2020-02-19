@@ -7,7 +7,7 @@ import os
 from yui import YUI
 from yui import YEvent
 
-cmd = ["tpm2_algtest", "-s", "perf"]
+cmd = ["./tpm2-algtest/build/tpm2_algtest", "-s"]
 
 if __name__ == "__main__":
     dialog = YUI.widgetFactory().createMainDialog()
@@ -17,18 +17,19 @@ if __name__ == "__main__":
     group = YUI.widgetFactory().createRadioButtonGroup(vbox)
     type_box = YUI.widgetFactory().createHBox(group)
 
-    quicktest_button = YUI.widgetFactory().createRadioButton(type_box, "&quicktest")
-    quicktest_button.setValue(True)
-    group.addRadioButton(quicktest_button)
+    # quicktest_button = YUI.widgetFactory().createRadioButton(type_box, "&quicktest")
+    # quicktest_button.setValue(True)
+    # group.addRadioButton(quicktest_button)
 
     keygen_button = YUI.widgetFactory().createRadioButton(type_box, "&keygen")
+    keygen_button.setValue(True)
     group.addRadioButton(keygen_button)
 
     perf_button = YUI.widgetFactory().createRadioButton(type_box, "&perf")
     group.addRadioButton(perf_button)
 
-    fulltest_button = YUI.widgetFactory().createRadioButton(type_box, "&fulltest")
-    group.addRadioButton(fulltest_button)
+    # fulltest_button = YUI.widgetFactory().createRadioButton(type_box, "&fulltest")
+    # group.addRadioButton(fulltest_button)
 
     primary_box = YUI.widgetFactory().createVBox(vbox)
     progress_bar = YUI.widgetFactory().createProgressBar(primary_box, "Test progress", 100)
@@ -65,7 +66,10 @@ if __name__ == "__main__":
                 if algtest_proc is not None and algtest_proc.poll() is None:
                     algtest_proc.terminate()
                 progress_bar.setValue(0)
-                algtest_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+                test = "keygen"
+                if perf_button.value():
+                    test = "perf"
+                algtest_proc = subprocess.Popen(cmd + [test], stdout=subprocess.PIPE)
                 fd = algtest_proc.stdout.fileno()
                 fl = fcntl.fcntl(fd, fcntl.F_GETFL)
                 fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
