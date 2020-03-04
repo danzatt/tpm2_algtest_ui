@@ -7,7 +7,7 @@ import os
 from yui import YUI
 from yui import YEvent
 
-cmd = ["./tpm2-algtest/build/tpm2_algtest", "-s"]
+cmd = ["tpm2_algtest", "-s"]
 
 if __name__ == "__main__":
     dialog = YUI.widgetFactory().createMainDialog()
