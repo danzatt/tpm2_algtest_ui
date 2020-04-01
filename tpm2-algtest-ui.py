@@ -1,204 +1,563 @@
 #!/usr/bin/python3
 
+from collections import deque
+from enum import Enum, auto
+
+from threading import Thread, Lock
 import subprocess
 import fcntl
 import os
 import csv
 import glob
-
-from collections import deque
+import requests
+import json
+import datetime
+import zipfile
 
 from yui import YUI
 from yui import YEvent
 
-tests_to_run = deque()
+image_tag = 'tpm2-algtest-ui v1.0'
 
-detail_dir = "out"
-cmd = ["tpm2_algtest", '--outdir=' + detail_dir, "-s"]
-algtest_proc = None
 
-def compute_rsa_privates(filename):
-    def extended_euclidean(a, b):
-        x0, x1, y0, y1 = 0, 1, 1, 0
-        while a != 0:
-            q, b, a = b // a, a, b % a
-            y0, y1 = y1, y0 - q * y1
-            x0, x1 = x1, x0 - q * x1
-        return b, x0, y0
+class ISUploader:
+    def __init__(self, user_agent, uco):
+        self.user_agent = user_agent
+        self.uco = uco
+        self.headers = {
+            'User-Agent': self.user_agent
+        }
 
-    def mod_exp(base, exp, n):
-        res = 1
-        base %= n
-        while exp > 0:
-            if exp % 2 == 1:
-                res *= base
-                res %= n
-            exp //= 2
-            base *= base
-            base %= n
-        return res
+        self.params = (
+            ('vybos_vzorek_last', ''),
+            ('vybos_vzorek', self.uco),
+            ('vybos_hledej', 'Vyhledat osobu')
+        )
 
-    def compute_row(row):
+    def upload(self, filename, description="", mail_text=""):
         try:
-            n = int(row['n'], 16)
-            e = int(row['e'], 16)
-            p = int(row['p'], 16)
-        except Exception:
-            print(f"Cannot compute row {row['id']}")
+            files = {
+                'quco': (None, self.uco),
+                'vlsozav': (None, 'najax'),
+                'ajax-upload': (None, 'ajax'),
+                'FILE_1': (filename, open(filename, 'rb')),
+                'A_NAZEV_1': (None, filename),
+                'A_POPIS_1': (None, description),
+                'TEXT_MAILU': (None, mail_text),
+            }
+
+            response = requests.post('https://is.muni.cz/dok/depository_in', headers=self.headers, params=self.params, files=files)
+            json_response = json.loads(response.content.decode("utf-8"))
+            if json_response["uspech"] != 1:
+                return False
+        except:
+            return False
+        return True
+
+
+class TestResultCollector:
+    def __init__(self, outdir):
+        self.outdir = outdir
+        self.detail_dir = os.path.join(self.outdir, 'detail')
+
+    def create_result_files(self):
+        manufacturer, vendor_str, fw = self.get_tpm_id()
+        file_name = manufacturer + '_' + vendor_str + '_' + fw + '.csv'
+
+        os.makedirs(os.path.join(self.outdir, 'results'), exist_ok=True)
+        with open(os.path.join(self.outdir, 'results', file_name), 'w') as support_file:
+            self.write_header(support_file, manufacturer, vendor_str, fw)
+            self.write_support_file(support_file)
+
+        os.makedirs(os.path.join(self.outdir, 'performance'), exist_ok=True)
+        with open(os.path.join(self.outdir, 'performance', file_name), 'w') as perf_file:
+            self.write_header(perf_file, manufacturer, vendor_str, fw)
+            self.write_perf_file(perf_file)
+
+    def write_header(self, file, manufacturer, vendor_str, fw):
+        file.write('Tested and provided by;\n')
+        file.write(f'Execution date/time; {datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")}\n')
+        file.write(f'Manufacturer; {manufacturer}\n')
+        file.write(f'Vendor string; {vendor_str}\n')
+        file.write(f'Firmware version; {fw}\n')
+        file.write(f'Image tag; {image_tag}\n\n')
+
+    def get_tpm_id(self):
+        def get_val(line):
+            return line[line.find('0x') + 2:-1]
+
+        manufacturer = ''
+        vendor_str = ''
+        fw = ''
+        qt_properties = os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt')
+        if os.path.isfile(qt_properties):
+            with open(os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt'), 'r') as properties_file:
+                read_vendor_str = False
+                fw1 = ''
+                fw2 = ''
+                for line in properties_file:
+                    if read_vendor_str:
+                        vendor_str += bytearray.fromhex(get_val(line)).decode()
+                        read_vendor_str = False
+                    elif line.startswith('TPM_PT_MANUFACTURER'):
+                        manufacturer = bytearray.fromhex(get_val(line)).decode()
+                    elif line.startswith('TPM_PT_FIRMWARE_VERSION_1'):
+                        fw1 = line[line.find('0x') + 2:-1]
+                        assert(len(fw1) == 8)
+                    elif line.startswith('TPM_PT_FIRMWARE_VERSION_2'):
+                        fw2 = line[line.find('0x') + 2:-1]
+                        assert(len(fw2) == 8)
+                    elif line.startswith('TPM_PT_VENDOR_STRING_'):
+                        read_vendor_str = True
+                fw = str(int(fw1[0:4], 16)) + '.' + str(int(fw1[4:8], 16)) + '.' + str(int(fw2[0:4], 16)) + '.' + str(int(fw2[4:8], 16))
+
+        manufacturer = manufacturer.replace('\0', '')
+        vendor_str = vendor_str.replace('\0', '')
+        return manufacturer, vendor_str, fw
+
+    def write_support_file(self, support_file):
+            qt_properties = os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt')
+            if os.path.isfile(qt_properties):
+                support_file.write('\nQuicktest_properties-fixed\n')
+                with open(os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt'), 'r') as infile:
+                    properties = ""
+                    for line in infile:
+                        if line.startswith('  as UINT32:'):
+                            continue
+                        if line.startswith('  as string:'):
+                            line = line[line.find('"'):]
+                            properties = properties[:-1] + '\t' + line
+                        else:
+                            properties += line.replace(':', ';')
+                    support_file.write(properties)
+
+            qt_algorithms = os.path.join(self.detail_dir, 'Quicktest_algorithms.txt')
+            if os.path.isfile(qt_algorithms):
+                support_file.write('\nQuicktest_algorithms\n')
+                with open(qt_algorithms, 'r') as infile:
+                    for line in infile:
+                        if line.startswith('TPMA_ALGORITHM'):
+                            line = line[line.find('0x'):]
+                            line = line[:line.find(' ')]
+                            support_file.write(line + '\n')
+
+            qt_commands = os.path.join(self.detail_dir, 'Quicktest_commands.txt')
+            if os.path.isfile(qt_commands):
+                support_file.write('\nQuicktest_commands\n')
+                with open(qt_commands, 'r') as infile:
+                    for line in infile:
+                        if line.startswith('  commandIndex:'):
+                            line = line[line.find('0x'):]
+                            support_file.write(line)
+
+            qt_ecc_curves = os.path.join(self.detail_dir, 'Quicktest_ecc-curves.txt')
+            if os.path.isfile(qt_ecc_curves):
+                support_file.write('\nQuicktest_ecc-curves\n')
+                with open(os.path.join(self.detail_dir, 'Quicktest_ecc-curves.txt'), 'r') as infile:
+                    for line in infile:
+                        line = line[line.find('(') + 1:line.find(')')]
+                        support_file.write(line + '\n')
+
+    def write_perf_file(self, perf_file):
+        perf_csvs = glob.glob(os.path.join(self.detail_dir, 'Perf_*.csv'))
+        perf_csvs.sort()
+        command = ''
+        for filepath in perf_csvs:
+            filename = os.path.basename(filepath)
+            params_idx = filename.find(':')
+            suffix_idx = filename.find('.csv')
+            new_command = filename[5:suffix_idx if params_idx == -1 else params_idx]
+            params = filename[params_idx+1:suffix_idx].split('_')
+            if new_command != command:
+                command = new_command
+                perf_file.write('TPM2_' + command + '\n\n')
+
+            if command == 'GetRandom':
+                perf_file.write(f'Data length (bytes):;32\n')
+            elif command in [ 'Sign', 'VerifySignature', 'RSA_Encrypt', 'RSA_Decrypt' ]:
+                perf_file.write(f'Key parameters:;{params[0]} {params[1]};Scheme:;{params[2]}\n')
+            elif command == 'EncryptDecrypt':
+                perf_file.write(f'Algorithm:;{params[0]};Key length:;{params[1]};Mode:;{params[2]};Encrypt/decrypt?:;{params[3]};Data length (bytes):;256\n')
+            elif command == 'HMAC':
+                perf_file.write('Hash algorithm:;SHA-256;Data length (bytes):;256\n')
+            elif command == 'Hash':
+                perf_file.write(f'Hash algorithm:;{params[0]};Data length (bytes):;256\n')
+            else:
+                perf_file.write(f'Key parameters:;{" ".join(params)}\n')
+
+            with open(filepath, 'r') as infile:
+                avg_op, min_op, max_op, total, success, fail, error = self.compute_stats(infile)
+                perf_file.write(f'operation stats (ms/op):;avg op:;{avg_op:.2f};min op:;{min_op:.2f};max op:;{max_op:.2f}\n')
+                perf_file.write(f'operation info:;total iterations:;{total};successful:;{success};failed:;{fail};error:;{"None" if not error else error}\n\n')
+
+    def compute_stats(self, infile, *, rsa2048=False):
+        ignore = 5 if rsa2048 else 0
+        success, fail, sum_op, min_op, max_op, avg_op = 0, 0, 0, 10000000000, 0, 0
+        error = None
+        for line in infile:
+            if line.startswith('duration'):
+                continue
+            if ignore > 0:
+                ignore -= 1
+                continue
+            t, rc = line.split(',')[:2]
+            rc = rc.replace(' ', '')
+            rc = rc.replace('\n', '')
+            if rc == '0000':
+                success += 1
+            else:
+                error = rc
+                fail += 1
+                continue
+            t = float(t)
+            sum_op += t
+            if t > max_op: max_op = t
+            if t < min_op: min_op = t
+        total = success + fail
+        if success != 0:
+            avg_op = (sum_op / success)
+        else:
+            min_op = 0
+
+        return avg_op * 1000, min_op * 1000, max_op * 1000, total, success, fail, error # sec -> ms
+
+    def zip(self):
+        zipf = zipfile.ZipFile(self.outdir + '.zip', 'w', zipfile.ZIP_DEFLATED)
+        for root, _, files in os.walk(self.outdir):
+            for file in files:
+                zipf.write(os.path.join(root, file))
+
+    def generate_zip(self):
+        self.create_result_files()
+        self.zip()
+        return self.outdir + '.zip'
+
+
+class TestType(Enum):
+    PERFORMANCE = auto()
+    KEYGEN = auto()
+
+
+class AlgtestTestRunner(Thread):
+    def __init__(self, out_dir):
+        super().__init__(name="AlgtestTestRunner")
+        self.out_dir = out_dir
+        self.detail_dir = os.path.join(self.out_dir, 'detail')
+        self.cmd = ["tpm2_algtest", '--outdir=' + self.detail_dir, "-s"]
+
+        self.percentage = 0
+        self.text = []
+        self.info_lock = Lock()
+        self.info_changed = True
+
+        self.tests_to_run = deque()
+        self.algtest_proc = None
+        self.shall_stop = False
+
+        self.uploader = ISUploader("tpm2-algtest-ui", 469348)
+        self.result_collector = TestResultCollector(self.out_dir)
+
+    def run(self):
+        total_tests = len(self.tests_to_run)
+        current_test = 1
+
+        self.append_text("Collecting basic TPM info...")
+        code = self.run_quicktest()
+        if code != 0:
+            self.append_text("Cannot collect TPM info. Do you have TPM present and enabled in BIOS?")
+            return code
+
+        while self.tests_to_run and not self.get_shall_stop():
+            test = self.tests_to_run.popleft()
+            os.makedirs(self.detail_dir, exist_ok=True)
+
+            self.append_text(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
+            if test == TestType.PERFORMANCE:
+                self.algtest_proc = subprocess.Popen(self.cmd + ["perf"], stdout=subprocess.PIPE)
+            elif test == TestType.KEYGEN:
+                self.algtest_proc = subprocess.Popen(self.cmd + ["keygen"], stdout=subprocess.PIPE)
+
+            fd = self.algtest_proc.stdout.fileno()
+            fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+            self.monitor_algtest()
+
+            if self.algtest_proc.poll() is None:
+                if self.get_shall_stop():
+                    self.algtest_proc.terminate()
+
+                print("Waiting for the tpm2_algtest process to finish...")
+                self.append_text("Waiting for the tpm2_algtest process to finish...")
+                self.algtest_proc.wait()
+
+            code = self.algtest_proc.returncode
+            if code != 0:
+                if not self.get_shall_stop():
+                    print("The tpm2_algtest process failed. Please try to re-run the test.")
+                    self.append_text("The tpm2_algtest process failed. Please try to re-run the test.")
+                return code
+
+            self.append_text(f"The {test.name.lower()} test finished")
+
+            if test == TestType.KEYGEN and not self.get_shall_stop():
+                self.append_text(f"Computing RSA private keys...")
+                self.keygen_post()
+
+            current_test += 1
+
+        if self.get_shall_stop():
+            self.append_text("Stop requested.")
             return
-        q = n // p
-        totient = (p - 1) * (q - 1)
-        _, d, _ = extended_euclidean(e, totient)
-        d %= totient
 
-        message = 12345678901234567890
-        assert mod_exp(mod_exp(message, e, n), d, n) == message, \
-            f"something went wrong (row {row['id']})"
+        self.append_text("All tests finished successfully.")
+        self.append_text("Collecting results...")
+        result_zip = self.result_collector.generate_zip()
+        self.append_text("Uploading results...")
+        if self.uploader.upload(result_zip):
+            self.append_text("Results uploaded successfully.")
+        else:
+            self.append_text("Results upload failed.")
+        self.set_percentage(100)
+        self.append_text("Done.")
 
-        row['q'] = '%X' % q
-        row['d'] = '%X' % d
+    def get_info_changed(self):
+        with self.info_lock:
+            if not self.info_changed:
+                return False
 
-    rows = []
-    with open(filename) as infile:
-        reader = csv.DictReader(infile, delimiter=';')
-        for row in reader:
-            rows.append(row)
+            self.info_changed = False
+            return True
 
-    for row in rows:
-        compute_row(row)
+    def monitor_algtest(self):
+        if self.algtest_proc is None:
+            return
 
-    with open(filename, 'w') as outfile:
-        writer = csv.DictWriter(
-                outfile, delimiter=';', fieldnames=list(rows[0].keys()))
-        writer.writeheader()
+        while self.algtest_proc.poll() is None and not self.get_shall_stop():
+            line = self.algtest_proc.stdout.readline().decode("ascii")
+            while line != "" and not self.get_shall_stop():
+                if 2 < len(line) <= 5 and line[-2] == "%":
+                    self.set_percentage(int(line[:-2]))
+                else:
+                    self.append_text(line[:-1])
+                line = self.algtest_proc.stdout.readline().decode("ascii")
+
+    def append_text(self, text):
+        with self.info_lock:
+            self.text.append(text)
+            self.info_changed = True
+
+    def get_text(self):
+        with self.info_lock:
+            return "\n".join(self.text)
+
+    def set_percentage(self, value):
+        with self.info_lock:
+            self.percentage = value
+            self.info_changed = True
+
+    def get_percentage(self):
+        with self.info_lock:
+            return self.percentage
+
+    def stop(self):
+        with self.info_lock:
+            self.shall_stop = True
+
+    def get_shall_stop(self):
+        with self.info_lock:
+            return self.shall_stop
+
+    def keygen_post(self):
+        for filename in glob.glob(os.path.join(self.detail_dir, 'Keygen_RSA_*_keys.csv')):
+            self.compute_rsa_privates(filename)
+
+    def run_quicktest(self):
+        os.makedirs(self.detail_dir, exist_ok=True)
+
+        run_command = ['tpm2_getcap']
+
+        getcap_proc = subprocess.Popen(["tpm2_getcap", "-v"], stdout=subprocess.PIPE)
+        line = getcap_proc.stdout.readline().decode("ascii")
+        version_begin = line.find('version="') + len('version="')
+        version_end = line.find('"', version_begin)
+        version = line[version_begin:version_end].split(".")
+        version = list(map(int, version))
+
+        # newer versions take category directly as an argument, older need -c
+        if version < [4, 0, 0]:
+            run_command.append("-c")
+
+        categories = ['algorithms', 'commands', 'properties-fixed', 'properties-variable', 'ecc-curves', 'handles-persistent']
+        for category in categories:
+            with open(os.path.join(self.detail_dir, f'Quicktest_{category}.txt'), 'w') as outfile:
+                return subprocess.run(run_command + [category], stdout=outfile).returncode
+
+    def schedule_test(self, test):
+        self.tests_to_run.append(test)
+
+    def terminate(self):
+        self.stop()
+        if self.is_alive():
+            self.join()
+
+        if self.algtest_proc is not None and self.algtest_proc.poll() is None:
+            self.algtest_proc.terminate()
+
+    def compute_rsa_privates(self, filename):
+        def extended_euclidean(a, b):
+            x0, x1, y0, y1 = 0, 1, 1, 0
+            while a != 0:
+                q, b, a = b // a, a, b % a
+                y0, y1 = y1, y0 - q * y1
+                x0, x1 = x1, x0 - q * x1
+            return b, x0, y0
+
+        def mod_exp(base, exp, n):
+            res = 1
+            base %= n
+            while exp > 0:
+                if exp % 2 == 1:
+                    res *= base
+                    res %= n
+                exp //= 2
+                base *= base
+                base %= n
+            return res
+
+        def compute_row(row):
+            try:
+                n = int(row['n'], 16)
+                e = int(row['e'], 16)
+                p = int(row['p'], 16)
+            except Exception:
+                print(f"Cannot compute row {row['id']}")
+                return
+            q = n // p
+            totient = (p - 1) * (q - 1)
+            _, d, _ = extended_euclidean(e, totient)
+            d %= totient
+
+            message = 12345678901234567890
+            assert mod_exp(mod_exp(message, e, n), d, n) == message, \
+                f"something went wrong (row {row['id']})"
+
+            row['q'] = '%X' % q
+            row['d'] = '%X' % d
+
+        rows = []
+        with open(filename) as infile:
+            reader = csv.DictReader(infile, delimiter=';')
+            for row in reader:
+                rows.append(row)
+
         for row in rows:
-            writer.writerow(row)
+            compute_row(row)
 
-def run_test(test):
-    global algtest_proc
-    test = "perf" if perf_button.value() else "keygen"
-    algtest_proc = subprocess.Popen(cmd + [test], stdout=subprocess.PIPE)
-    fd = algtest_proc.stdout.fileno()
-    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        with open(filename, 'w') as outfile:
+            writer = csv.DictWriter(
+                    outfile, delimiter=';', fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
 
-def run_perf():
-    run_test("perf")
 
-def run_keygen():
-    run_test("keygen")
+class TPM2AlgtestUI:
+    def __init__(self):
+        self.out_dir = "out"
+        self.algtest_runner = AlgtestTestRunner(self.out_dir)
 
-def keygen_post():
-    print('Computing RSA private keys...')
-    for filename in glob.glob(os.path.join(detail_dir, 'Keygen_RSA_*_keys.csv')):
-        print(filename)
-        compute_rsa_privates(filename)
+        self.dialog = None
+        self.vbox = None
+        self.group = None
+        self.type_box = None
+        self.both_button = None
+        self.keygen_button = None
+        self.perf_button = None
+        self.primary_box = None
+        self.progress_bar = None
+        self.text = None
+        self.bottom_buttons = None
+        self.run_button = None
+        self.stop_button = None
+        self.exit_button = None
 
-def run_quicktest():
-    os.makedirs(detail_dir, exist_ok=True)
+    def construct_ui(self):
+        YUI.application().setProductName("TPM2 algorithms test")
+        YUI.application().setApplicationTitle("TPM2 algorithms test")
 
-    run_command = ['tpm2_getcap']
+        self.dialog = YUI.widgetFactory().createMainDialog()
+        # self.dialog.setPendingEvent(None)
+        self.vbox = YUI.widgetFactory().createVBox(self.dialog)
+        self.hbox = YUI.widgetFactory().createHBox(self.vbox)
+        YUI.widgetFactory().createLabel(self.hbox, "Select the test type")
 
-    getcap_proc = subprocess.Popen(["tpm2_getcap", "-v"], stdout=subprocess.PIPE)
-    line = getcap_proc.stdout.readline().decode("ascii")
-    version_begin = line.find('version="') + len('version="')
-    version_end = line.find('"', version_begin)
-    version = line[version_begin:version_end].split(".")
-    version = list(map(int, version))
+        self.group = YUI.widgetFactory().createRadioButtonGroup(self.hbox)
+        self.type_box = YUI.widgetFactory().createHBox(self.group)
 
-    # newer versions take category directly as an argument, older need -c
-    if version < [4, 0, 0]:
-        run_command.append("-c")
+        self.keygen_button = YUI.widgetFactory().createRadioButton(self.type_box, "&keygen")
+        self.group.addRadioButton(self.keygen_button)
 
-    categories = ['algorithms', 'commands', 'properties-fixed', 'properties-variable', 'ecc-curves', 'handles-persistent']
-    for category in categories:
-        with open(os.path.join(detail_dir, f'Quicktest_{category}.txt'), 'w') as outfile:
-            subprocess.run(run_command + [category], stdout=outfile).check_returncode()
+        self.perf_button = YUI.widgetFactory().createRadioButton(self.type_box, "&perf")
+        self.group.addRadioButton(self.perf_button)
+
+        self.both_button = YUI.widgetFactory().createRadioButton(self.type_box, "&both")
+        self.both_button.setValue(True)
+        self.group.addRadioButton(self.both_button)
+
+        self.primary_box = YUI.widgetFactory().createVBox(self.vbox)
+        self.progress_bar = YUI.widgetFactory().createProgressBar(self.primary_box, "Current test progress", 100)
+        self.progress_bar.setValue(0)
+
+        self.text = YUI.widgetFactory().createRichText(self.vbox, "", True)
+        self.text.setText("Select the test type and press RUN to start.")
+        self.text.setAutoScrollDown(True)
+
+        self.bottom_buttons = YUI.widgetFactory().createHBox(self.vbox)
+        self.run_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&RUN")
+        self.stop_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&STOP")
+        self.stop_button.setKeyboardFocus()
+        self.exit_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&EXIT")
+
+    def main_ui_loop(self):
+        while True:
+            ev = self.dialog.waitForEvent(100)
+
+            if ev.eventType() == YEvent.CancelEvent:
+                if self.algtest_runner.is_alive():
+                    self.algtest_runner.terminate()
+                self.dialog.destroy()
+                break
+            elif ev.eventType() == YEvent.WidgetEvent:
+                if ev.widget() in [self.exit_button, self.stop_button]:
+                    self.algtest_runner.terminate()
+                    self.algtest_runner = AlgtestTestRunner(self.out_dir)
+
+                    if ev.widget() == self.exit_button:
+                        self.dialog.destroy()
+                        break
+                elif ev.widget() == self.run_button:
+                    self.text.setText("Starting tests...")
+
+                    if self.algtest_runner.is_alive():
+                        self.algtest_runner.terminate()
+                    self.algtest_runner = AlgtestTestRunner(self.out_dir)
+
+                    if self.both_button.value() or self.keygen_button.value():
+                        self.algtest_runner.schedule_test(TestType.KEYGEN)
+
+                    if self.both_button.value() or self.perf_button.value():
+                        self.algtest_runner.schedule_test(TestType.PERFORMANCE)
+
+                    self.algtest_runner.start()
+
+            elif ev.eventType() == YEvent.TimeoutEvent:
+                if self.algtest_runner.get_info_changed():
+                    self.progress_bar.setValue(self.algtest_runner.get_percentage())
+                    self.text.setText(self.algtest_runner.get_text())
+
 
 if __name__ == "__main__":
-    dialog = YUI.widgetFactory().createMainDialog()
-    vbox = YUI.widgetFactory().createVBox(dialog)
-    YUI.widgetFactory().createLabel(vbox, "TPM2 algorithms test")
-
-    group = YUI.widgetFactory().createRadioButtonGroup(vbox)
-    type_box = YUI.widgetFactory().createHBox(group)
-
-    both_button = YUI.widgetFactory().createRadioButton(type_box, "&both")
-    both_button.setValue(True)
-    group.addRadioButton(both_button)
-
-    keygen_button = YUI.widgetFactory().createRadioButton(type_box, "&keygen")
-    group.addRadioButton(keygen_button)
-
-    perf_button = YUI.widgetFactory().createRadioButton(type_box, "&perf")
-    group.addRadioButton(perf_button)
-
-    # fulltest_button = YUI.widgetFactory().createRadioButton(type_box, "&fulltest")
-    # group.addRadioButton(fulltest_button)
-
-    primary_box = YUI.widgetFactory().createVBox(vbox)
-    progress_bar = YUI.widgetFactory().createProgressBar(primary_box, "Test progress", 100)
-    progress_bar.setValue(0)
-
-    text = YUI.widgetFactory().createRichText(vbox, "", True)
-    text.setText("Select the test type and press RUN to start.")
-    text.setAutoScrollDown(True)
-
-    bottom_buttons = YUI.widgetFactory().createHBox(vbox)
-
-    run_button = YUI.widgetFactory().createPushButton(bottom_buttons, "&RUN")
-    stop_button = YUI.widgetFactory().createPushButton(bottom_buttons, "&STOP")
-    exit_button = YUI.widgetFactory().createPushButton(bottom_buttons, "&EXIT")
-
-    while True:
-        ev = dialog.waitForEvent(10)
-
-        if ev.eventType() == YEvent.CancelEvent:
-            dialog.destroy()
-            if algtest_proc is not None and algtest_proc.poll() is None:
-                algtest_proc.terminate()
-            break
-        elif ev.eventType() == YEvent.WidgetEvent:
-            if ev.widget() in [exit_button, stop_button]:
-                if algtest_proc is not None and algtest_proc.poll() is None:
-                    algtest_proc.terminate()
-                progress_bar.setValue(0)
-                if ev.widget() == exit_button:
-                    dialog.destroy()
-                    break
-            elif ev.widget() == run_button:
-                text.setText("Starting tests...")
-                if algtest_proc is not None and algtest_proc.poll() is None:
-                    algtest_proc.terminate()
-
-                progress_bar.setValue(0)
-
-                tests_to_run = deque()
-                tests_to_run.append((run_quicktest, "Collecting basic TPM info..."))
-
-                if perf_button.value():
-                    tests_to_run.append((run_perf, "Running perf test... (1/1)"))
-                elif keygen_button.value():
-                    tests_to_run.append((run_keygen, "Running keygen test... (1/1)"))
-                    tests_to_run.append((keygen_post, "Computing RSA private keys..."))
-                elif both_button.value():
-                    tests_to_run.append((run_perf, "Running perf test... (1/2)"))
-                    tests_to_run.append((run_keygen, "Running keygen test... (2/2)"))
-                    tests_to_run.append((keygen_post, "Computing RSA private keys..."))
-
-        elif ev.eventType() == YEvent.TimeoutEvent:
-            if algtest_proc is not None and algtest_proc.poll() == 0:
-                progress_bar.setValue(100)
-
-            if (algtest_proc is None or algtest_proc.poll() is not None) and len(tests_to_run) > 0:
-                next_test, message = tests_to_run.popleft()
-                text.setText(text.text() + "\n" + message)
-                next_test()
-
-            if algtest_proc is None:
-                continue
-            line = algtest_proc.stdout.readline().decode("ascii")
-            while line != "":
-                if 2 < len(line) <= 5 and line[-2] == "%":
-                    progress_bar.setValue(int(line[:-2]))
-                line = algtest_proc.stdout.readline().decode("ascii")
+    ui = TPM2AlgtestUI()
+    ui.construct_ui()
+    ui.main_ui_loop()
