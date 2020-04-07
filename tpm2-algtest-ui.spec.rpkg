@@ -48,13 +48,38 @@ GUI/TUI for tpm2-algtest
 # the installable rpm package.
 %install
 mkdir -p %{buildroot}/usr/bin/
-mv tpm2-algtest-ui.py %{buildroot}/usr/bin/tpm2-algtest-ui
+cp tpm2-algtest-ui.py %{buildroot}/usr/bin/tpm2-algtest-ui
 chmod +x %{buildroot}/usr/bin/tpm2-algtest-ui
+
+mkdir -p %{_datadir}/icons/hicolor/scalable/apps/
+cp res/tpm2-algtest.svg %{_datadir}/icons/hicolor/scalable/apps/
+
+mkdir -p %{_datadir}/applications/
+cp res/tpm2-algtest-ui.desktop %{_datadir}/applications/
+
 
 # This lists all the files that are included in the rpm package and that
 # are going to be installed into target system where the rpm is installed.
 %files
 /usr/bin/tpm2-algtest-ui
+%{_datadir}/icons/hicolor/scalable/apps/tpm2-algtest.svg
+%{_datadir}/applications/tpm2-algtest-ui.desktop
+
+%post
+touch --no-create %{_datadir}/icons/hicolor || :
+if [ -x %{_bindir}/gtk-update-icon-cache ] ; then
+%{_bindir}/gtk-update-icon-cache --quiet %{_datadir}/icons/hicolor || :
+fi
+
+desktop-file-install %{_datadir}/applications/tpm2-algtest-ui.desktop
+
+%postun
+touch --no-create %{_datadir}/icons/hicolor || :
+if [ -x %{_bindir}/gtk-update-icon-cache ] ; then
+%{_bindir}/gtk-update-icon-cache --quiet %{_datadir}/icons/hicolor || :
+fi
+
+desktop-file-install %{_datadir}/applications/tpm2-algtest-ui.desktop
 
 # Finally, changes from the latest release of your application are generated from
 # your project's Git history. It will be empty until you make first annotated Git tag.

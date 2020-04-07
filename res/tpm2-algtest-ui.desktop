@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=TPM 2.0 AlgTest
+Comment=Benchamrk TPM 2.0 and collect its properties
+TryExec=tpm2-algtest-ui
+Exec=tpm2-algtest-ui
+Type=Application
+Categories=GNOME;GTK;Utility;System;
+StartupNotify=true
+Keywords=benchmark;tpm;algtest;
