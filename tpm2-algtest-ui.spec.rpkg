@@ -55,6 +55,7 @@ mkdir -p %{_datadir}/icons/hicolor/scalable/apps/
 cp res/tpm2-algtest.svg %{_datadir}/icons/hicolor/scalable/apps/
 
 mkdir -p %{_datadir}/applications/
+echo "Icon=%{_datadir}/icons/hicolor/scalable/apps/tpm2-algtest.svg" >> res/tpm2-algtest-ui.desktop
 cp res/tpm2-algtest-ui.desktop %{_datadir}/applications/
 
 
