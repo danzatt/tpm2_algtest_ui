@@ -51,12 +51,12 @@ mkdir -p %{buildroot}/usr/bin/
 cp tpm2-algtest-ui.py %{buildroot}/usr/bin/tpm2-algtest-ui
 chmod +x %{buildroot}/usr/bin/tpm2-algtest-ui
 
-mkdir -p %{_datadir}/icons/hicolor/scalable/apps/
-cp res/tpm2-algtest.svg %{_datadir}/icons/hicolor/scalable/apps/
+mkdir -p %{buildroot}/%{_datadir}/icons/hicolor/scalable/apps/
+cp res/tpm2-algtest.svg %{buildroot}/%{_datadir}/icons/hicolor/scalable/apps/
 
-mkdir -p %{_datadir}/applications/
+mkdir -p %{buildroot}/%{_datadir}/applications/
 echo "Icon=%{_datadir}/icons/hicolor/scalable/apps/tpm2-algtest.svg" >> res/tpm2-algtest-ui.desktop
-cp res/tpm2-algtest-ui.desktop %{_datadir}/applications/
+cp res/tpm2-algtest-ui.desktop %{buildroot}/%{_datadir}/applications/
 
 
 # This lists all the files that are included in the rpm package and that
