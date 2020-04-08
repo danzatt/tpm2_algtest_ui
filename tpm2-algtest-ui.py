@@ -93,23 +93,44 @@ class TestResultCollector:
         if os.path.isfile(qt_properties):
             with open(os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt'), 'r') as properties_file:
                 read_vendor_str = False
+                read_manufacturer_str = False
+                read_fw1_str = False
+                read_fw2_str = False
                 fw1 = ''
                 fw2 = ''
                 for line in properties_file:
                     if read_vendor_str:
-                        vendor_str += bytearray.fromhex(get_val(line)).decode()
+                        val = get_val(line)
+                        if len(val) % 2 != 0:
+                            val = "0" + val
+
+                        vendor_str += bytearray.fromhex(val).decode()
                         read_vendor_str = False
-                    elif line.startswith('TPM_PT_MANUFACTURER'):
-                        manufacturer = bytearray.fromhex(get_val(line)).decode()
-                    elif line.startswith('TPM_PT_FIRMWARE_VERSION_1'):
+                    elif read_manufacturer_str:
+                        val = get_val(line)
+                        if len(val) % 2 != 0:
+                            val = "0" + val
+
+                        manufacturer = bytearray.fromhex(val).decode()
+                        read_manufacturer_str = False
+                    elif line.startswith('TPM2_PT_MANUFACTURER'):
+                        read_manufacturer_str = True
+                    elif line.startswith('TPM2_PT_FIRMWARE_VERSION_1'):
+                        read_fw1_str = True
+                    elif read_fw1_str:
                         fw1 = line[line.find('0x') + 2:-1]
-                        assert(len(fw1) == 8)
-                    elif line.startswith('TPM_PT_FIRMWARE_VERSION_2'):
+                        read_fw1_str = False
+                    elif line.startswith('TPM2_PT_FIRMWARE_VERSION_2'):
+                        read_fw2_str = True
+                    elif read_fw2_str:
                         fw2 = line[line.find('0x') + 2:-1]
-                        assert(len(fw2) == 8)
-                    elif line.startswith('TPM_PT_VENDOR_STRING_'):
+                        read_fw2_str = False
+                    elif line.startswith('TPM2_PT_VENDOR_STRING_'):
                         read_vendor_str = True
-                fw = str(int(fw1[0:4], 16)) + '.' + str(int(fw1[4:8], 16)) + '.' + str(int(fw2[0:4], 16)) + '.' + str(int(fw2[4:8], 16))
+                try:
+                    fw = str(int(fw1[0:4], 16)) + '.' + str(int(fw1[4:8], 16)) + '.' + str(int(fw2[0:4], 16)) + '.' + str(int(fw2[4:8], 16))
+                except:
+                    fw = ""
 
         manufacturer = manufacturer.replace('\0', '')
         vendor_str = vendor_str.replace('\0', '')
