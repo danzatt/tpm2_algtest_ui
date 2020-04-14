@@ -57,13 +57,14 @@ cp res/tpm2-algtest.svg %{buildroot}/%{_datadir}/icons/hicolor/scalable/apps/
 mkdir -p %{buildroot}/%{_datadir}/applications/
 echo "Icon=%{_datadir}/icons/hicolor/scalable/apps/tpm2-algtest.svg" >> res/tpm2-algtest-ui.desktop
 cp res/tpm2-algtest-ui.desktop %{buildroot}/%{_datadir}/applications/
+cp -r res/icons %{buildroot}/%{_datadir}/
 
 
 # This lists all the files that are included in the rpm package and that
 # are going to be installed into target system where the rpm is installed.
 %files
 /usr/bin/tpm2-algtest-ui
-%{_datadir}/icons/hicolor/scalable/apps/tpm2-algtest.svg
+%{_datadir}/icons/
 %{_datadir}/applications/tpm2-algtest-ui.desktop
 
 %post
