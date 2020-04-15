@@ -14,10 +14,15 @@ import json
 import datetime
 import zipfile
 
+from shutil import copy
+from uuid import uuid4
+from tempfile import mkdtemp
+
 from yui import YUI
 from yui import YEvent
 
-image_tag = 'tpm2-algtest-ui v1.0'
+IMAGE_TAG = 'tpm2-algtest-ui v1.0'
+RESULT_PATH = "/run/media/liveuser/ALGTEST_RES/"
 
 
 class ISUploader:
@@ -56,9 +61,11 @@ class ISUploader:
 
 
 class TestResultCollector:
-    def __init__(self, outdir):
+    def __init__(self, outdir, email):
         self.outdir = outdir
         self.detail_dir = os.path.join(self.outdir, 'detail')
+        self.zip_path = None
+        self.email = email
 
     def create_result_files(self):
         manufacturer, vendor_str, fw = self.get_tpm_id()
@@ -75,12 +82,12 @@ class TestResultCollector:
             self.write_perf_file(perf_file)
 
     def write_header(self, file, manufacturer, vendor_str, fw):
-        file.write('Tested and provided by;\n')
+        file.write(f'Tested and provided by;{self.email}\n')
         file.write(f'Execution date/time; {datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")}\n')
         file.write(f'Manufacturer; {manufacturer}\n')
         file.write(f'Vendor string; {vendor_str}\n')
         file.write(f'Firmware version; {fw}\n')
-        file.write(f'Image tag; {image_tag}\n\n')
+        file.write(f'Image tag; {IMAGE_TAG}\n\n')
 
     def get_tpm_id(self):
         def get_val(line):
@@ -243,21 +250,28 @@ class TestResultCollector:
         return avg_op * 1000, min_op * 1000, max_op * 1000, total, success, fail, error # sec -> ms
 
     def zip(self):
-        zipf = zipfile.ZipFile(self.outdir + '.zip', 'w', zipfile.ZIP_DEFLATED)
+        self.zip_path = self.outdir + '.zip'
+        zipf = zipfile.ZipFile(self.zip_path, 'w', zipfile.ZIP_DEFLATED)
         for root, _, files in os.walk(self.outdir):
             for file in files:
                 zipf.write(os.path.join(root, file))
+        zipf.close()
 
     def generate_zip(self):
         self.create_result_files()
         self.zip()
-        return self.outdir + '.zip'
+        return self.zip_path
 
 
 class TestType(Enum):
     PERFORMANCE = auto()
     KEYGEN = auto()
 
+
+class StoreType(Enum):
+    STORE_USB = auto()
+    UPLOAD = auto()
+    CANCEL = auto()
 
 class AlgtestTestRunner(Thread):
     def __init__(self, out_dir):
@@ -275,8 +289,11 @@ class AlgtestTestRunner(Thread):
         self.algtest_proc = None
         self.shall_stop = False
 
+        self.test_finished = False
+
         self.uploader = ISUploader("tpm2-algtest-ui", 469348)
-        self.result_collector = TestResultCollector(self.out_dir)
+
+        self.email = None
 
     def run(self):
         total_tests = len(self.tests_to_run)
@@ -302,7 +319,7 @@ class AlgtestTestRunner(Thread):
             fl = fcntl.fcntl(fd, fcntl.F_GETFL)
             fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
-            self.monitor_algtest()
+            self.monitor_algtest(current_test, total_tests)
 
             if self.algtest_proc.poll() is None:
                 if self.get_shall_stop():
@@ -333,14 +350,43 @@ class AlgtestTestRunner(Thread):
 
         self.append_text("All tests finished successfully.")
         self.append_text("Collecting results...")
-        result_zip = self.result_collector.generate_zip()
-        self.append_text("Uploading results...")
-        if self.uploader.upload(result_zip):
-            self.append_text("Results uploaded successfully.")
-        else:
-            self.append_text("Results upload failed.")
+        result_collector = TestResultCollector(self.out_dir, self.get_mail())
+        result_collector.generate_zip()
+        self.append_text("Results collected.")
         self.set_percentage(100)
-        self.append_text("Done.")
+
+        with self.info_lock:
+            self.test_finished = True
+
+    def store_results(self, store_type):
+        result_zip = self.out_dir + '.zip'
+
+        if os.path.isdir(RESULT_PATH):
+            try:
+                copy(result_zip, RESULT_PATH, result_zip)
+            except:
+                self.append_text("Failed to copy to USB.")
+        else:
+            self.append_text("ALGTEST_RES partition is not mounted. Can not store on USB.")
+
+        if store_type == StoreType.UPLOAD:
+            self.append_text("Uploading results...")
+            if self.uploader.upload(result_zip):
+                self.append_text("Results uploaded successfully.")
+            else:
+                self.append_text("Results upload failed.")
+
+    def set_mail(self, email):
+        with self.info_lock:
+            self.email = email
+
+    def get_mail(self):
+        with self.info_lock:
+            return self.email
+
+    def is_finished(self):
+        with self.info_lock:
+            return self.test_finished
 
     def get_info_changed(self):
         with self.info_lock:
@@ -350,7 +396,7 @@ class AlgtestTestRunner(Thread):
             self.info_changed = False
             return True
 
-    def monitor_algtest(self):
+    def monitor_algtest(self, current_test, total_tests):
         if self.algtest_proc is None:
             return
 
@@ -358,7 +404,9 @@ class AlgtestTestRunner(Thread):
             line = self.algtest_proc.stdout.readline().decode("ascii")
             while line != "" and not self.get_shall_stop():
                 if 2 < len(line) <= 5 and line[-2] == "%":
-                    self.set_percentage(int(line[:-2]))
+                    current_test_percentage = int(line[:-2]) / 100
+                    absolute_percentage = ((current_test - 1) / total_tests) + (1/total_tests) * current_test_percentage
+                    self.set_percentage(int(absolute_percentage * 100))
                 else:
                     self.append_text(line[:-1])
                 line = self.algtest_proc.stdout.readline().decode("ascii")
@@ -370,7 +418,7 @@ class AlgtestTestRunner(Thread):
 
     def get_text(self):
         with self.info_lock:
-            return "\n".join(self.text)
+            return "\n".join(self.text[-100:])
 
     def set_percentage(self, value):
         with self.info_lock:
@@ -412,7 +460,10 @@ class AlgtestTestRunner(Thread):
         categories = ['algorithms', 'commands', 'properties-fixed', 'properties-variable', 'ecc-curves', 'handles-persistent']
         for category in categories:
             with open(os.path.join(self.detail_dir, f'Quicktest_{category}.txt'), 'w') as outfile:
-                return subprocess.run(run_command + [category], stdout=outfile).returncode
+                ret = subprocess.run(run_command + [category], stdout=outfile).returncode
+                if ret != 0:
+                    return ret
+        return 0
 
     def schedule_test(self, test):
         self.tests_to_run.append(test)
@@ -485,7 +536,8 @@ class AlgtestTestRunner(Thread):
 
 class TPM2AlgtestUI:
     def __init__(self):
-        self.out_dir = "out"
+        self.out_dir = os.path.join(mkdtemp(), "tpm2-algtest", str(uuid4()))
+        os.makedirs(self.out_dir, exist_ok=True)
         self.algtest_runner = AlgtestTestRunner(self.out_dir)
 
         self.dialog = None
@@ -502,13 +554,21 @@ class TPM2AlgtestUI:
         self.run_button = None
         self.stop_button = None
         self.exit_button = None
+        self.store_button = None
+        self.mail_box = None
+
+        self.popup = None
+        self.yesNoButtons = None
+        self.popup_upload = None
+        self.popup_usb = None
+        self.popup_cancel = None
 
     def construct_ui(self):
+        YUI.application().setApplicationIcon("/usr/share/icons/hicolor/256x256/apps/tpm2-algtest.png")
         YUI.application().setProductName("TPM2 algorithms test")
         YUI.application().setApplicationTitle("TPM2 algorithms test")
-
         self.dialog = YUI.widgetFactory().createMainDialog()
-        # self.dialog.setPendingEvent(None)
+
         self.vbox = YUI.widgetFactory().createVBox(self.dialog)
         self.hbox = YUI.widgetFactory().createHBox(self.vbox)
         YUI.widgetFactory().createLabel(self.hbox, "Select the test type")
@@ -527,7 +587,16 @@ class TPM2AlgtestUI:
         self.group.addRadioButton(self.both_button)
 
         self.primary_box = YUI.widgetFactory().createVBox(self.vbox)
-        self.progress_bar = YUI.widgetFactory().createProgressBar(self.primary_box, "Current test progress", 100)
+
+        self.mail_box = YUI.widgetFactory().createHBox(self.vbox)
+        YUI.widgetFactory().createLabel(self.mail_box, "Your email (optional): ")
+        self.email_field = YUI.widgetFactory().createInputField(self.mail_box, "")
+
+        YUI.widgetFactory().createLabel(self.vbox, "We may need to contact you in the future if we need more info."\
+            "The email address won't be shared with anybody and no advertisement will be sent.")
+
+
+        self.progress_bar = YUI.widgetFactory().createProgressBar(self.primary_box, "Test progress", 100)
         self.progress_bar.setValue(0)
 
         self.text = YUI.widgetFactory().createRichText(self.vbox, "", True)
@@ -535,20 +604,55 @@ class TPM2AlgtestUI:
         self.text.setAutoScrollDown(True)
 
         self.bottom_buttons = YUI.widgetFactory().createHBox(self.vbox)
-        self.run_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&RUN")
-        self.stop_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&STOP")
-        self.stop_button.setKeyboardFocus()
-        self.exit_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&EXIT")
+        self.run_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Start")
+        self.dialog.setDefaultButton(self.run_button)
+        self.stop_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Stop")
+        self.exit_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Exit")
+        self.shutdown_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Shutdown")
+        self.dialog.highlight(self.shutdown_button)
+
+        self.dialog.open()
+        self.dialog.activate()
+
+    def popup_ask_upload(self):
+        self.popup = YUI.widgetFactory().createPopupDialog()
+
+        popup_vbox = YUI.widgetFactory().createVBox(self.popup)
+        YUI.widgetFactory().createLabel(popup_vbox, "Do you want to upload the anonymised "\
+            "results or just store on the USB?\nResults will be available after plugging "\
+            "the live USB on ALGTEST_RESULTS volume.\nIf you choose to upload, check if you set up networking.\n")
+        self.yesNoButtons = YUI.widgetFactory().createHBox(popup_vbox)
+
+        self.yesNoButtons = YUI.widgetFactory().createHBox(popup_vbox)
+        self.popup_usb = YUI.widgetFactory().createPushButton(self.yesNoButtons, "&Just store on USB")
+        self.popup_upload = YUI.widgetFactory().createPushButton(self.yesNoButtons, "&Upload and store")
+        self.popup_cancel = YUI.widgetFactory().createPushButton(self.yesNoButtons, "&Cancel")
+        self.popup.setDefaultButton(self.popup_usb)
+
+        self.popup.open()
+        self.popup.activate()
+
 
     def main_ui_loop(self):
-        while True:
-            ev = self.dialog.waitForEvent(100)
+        while self.dialog is not None and self.dialog.isOpen():
+            ev = self.dialog.topmostDialog().waitForEvent(100)
+
+            if self.algtest_runner.is_finished() and self.dialog.topmostDialog() != self.popup and self.store_button is None:
+                self.popup_ask_upload()
+                self.store_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Store results")
 
             if ev.eventType() == YEvent.CancelEvent:
+                print("terminate")
                 if self.algtest_runner.is_alive():
                     self.algtest_runner.terminate()
+
+                if self.popup is not None:
+                    self.popup.destroy()
+                    self.popup = None
+                    continue
+
                 self.dialog.destroy()
-                break
+                self.dialog = None
             elif ev.eventType() == YEvent.WidgetEvent:
                 if ev.widget() in [self.exit_button, self.stop_button]:
                     self.algtest_runner.terminate()
@@ -563,6 +667,7 @@ class TPM2AlgtestUI:
                     if self.algtest_runner.is_alive():
                         self.algtest_runner.terminate()
                     self.algtest_runner = AlgtestTestRunner(self.out_dir)
+                    self.algtest_runner.set_mail(self.email_field.value())
 
                     if self.both_button.value() or self.keygen_button.value():
                         self.algtest_runner.schedule_test(TestType.KEYGEN)
@@ -571,6 +676,21 @@ class TPM2AlgtestUI:
                         self.algtest_runner.schedule_test(TestType.PERFORMANCE)
 
                     self.algtest_runner.start()
+                elif ev.widget() == self.popup_cancel:
+                    self.popup.destroy()
+                    self.popup = None
+                elif ev.widget() == self.popup_usb:
+                    self.algtest_runner.store_results(StoreType.STORE_USB)
+                    self.popup.destroy()
+                    self.popup = None
+                elif ev.widget() == self.popup_upload:
+                    self.algtest_runner.store_results(StoreType.UPLOAD)
+                    self.popup.destroy()
+                    self.popup = None
+                elif ev.widget() == self.store_button:
+                    self.popup_ask_upload()
+                elif ev.widget() == self.shutdown_button:
+                    os.system("shutdown -h now")
 
             elif ev.eventType() == YEvent.TimeoutEvent:
                 if self.algtest_runner.get_info_changed():
