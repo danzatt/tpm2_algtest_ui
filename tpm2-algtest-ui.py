@@ -592,8 +592,8 @@ class TPM2AlgtestUI:
         YUI.widgetFactory().createLabel(self.mail_box, "Your email (optional): ")
         self.email_field = YUI.widgetFactory().createInputField(self.mail_box, "")
 
-        YUI.widgetFactory().createLabel(self.vbox, "We may need to contact you in the future if we need more info."\
-            "The email address won't be shared with anybody and no advertisement will be sent.")
+        YUI.widgetFactory().createLabel(self.vbox, "We may need to contact you in the future if we need more info. "\
+            "The email address won't be shared with anybody and you will not receive any advertisement.")
 
 
         self.progress_bar = YUI.widgetFactory().createProgressBar(self.primary_box, "Test progress", 100)
@@ -608,8 +608,10 @@ class TPM2AlgtestUI:
         self.dialog.setDefaultButton(self.run_button)
         self.stop_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Stop")
         self.exit_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Exit")
-        self.shutdown_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Shutdown")
-        self.dialog.highlight(self.shutdown_button)
+
+        shutdown_highlight_box = YUI.widgetFactory().createHBox(self.bottom_buttons)
+        self.shutdown_button = YUI.widgetFactory().createPushButton(shutdown_highlight_box, "&Shutdown PC")
+        self.dialog.highlight(shutdown_highlight_box)
 
         self.dialog.open()
         self.dialog.activate()
