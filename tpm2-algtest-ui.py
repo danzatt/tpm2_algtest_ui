@@ -87,7 +87,8 @@ class TestResultCollector:
         file.write(f'Manufacturer; {manufacturer}\n')
         file.write(f'Vendor string; {vendor_str}\n')
         file.write(f'Firmware version; {fw}\n')
-        file.write(f'Image tag; {IMAGE_TAG}\n\n')
+        file.write(f'Image tag; {IMAGE_TAG}\n')
+        file.write(f'TPM devices; {";".join(glob.glob("/dev/tpm*"))}\n\n')
 
     def get_tpm_id(self):
         def get_val(line):
@@ -254,7 +255,8 @@ class TestResultCollector:
         zipf = zipfile.ZipFile(self.zip_path, 'w', zipfile.ZIP_DEFLATED)
         for root, _, files in os.walk(self.outdir):
             for file in files:
-                zipf.write(os.path.join(root, file))
+                file_path = os.path.join(root, file)
+                zipf.write(file_path, file_path[len(self.outdir):])
         zipf.close()
 
     def generate_zip(self):
