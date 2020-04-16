@@ -349,7 +349,7 @@ class AlgtestTestRunner(Thread):
             return
 
         self.append_text("All tests finished successfully.")
-        self.append_text("Collecting results...")
+        self.append_text("Please wait, collecting results...")
         result_collector = TestResultCollector(self.out_dir, self.get_mail())
         result_collector.generate_zip()
         self.append_text("Results collected.")
@@ -364,7 +364,7 @@ class AlgtestTestRunner(Thread):
         if os.path.isdir(RESULT_PATH):
             try:
                 copy(result_zip, RESULT_PATH)
-                self.append_text("Copied to USB.")
+                self.append_text("Copied to USB. File name: " + os.path.basename(result_zip))
             except:
                 self.append_text("Failed to copy to USB.")
         else:
@@ -537,7 +537,7 @@ class AlgtestTestRunner(Thread):
 
 class TPM2AlgtestUI:
     def __init__(self):
-        self.out_dir = os.path.join(mkdtemp(), "tpm2-algtest", str(uuid4()))
+        self.out_dir = os.path.join(mkdtemp(), "tpm2-algtest", "algtest_result_" + str(uuid4()))
         os.makedirs(self.out_dir, exist_ok=True)
         self.algtest_runner = AlgtestTestRunner(self.out_dir)
 
@@ -642,7 +642,7 @@ class TPM2AlgtestUI:
 
             if self.algtest_runner.is_finished() and self.dialog.topmostDialog() != self.popup and self.store_button is None:
                 self.popup_ask_upload()
-                self.store_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Store results")
+                self.store_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Store or upload results")
 
             if ev.eventType() == YEvent.CancelEvent:
                 print("terminate")
