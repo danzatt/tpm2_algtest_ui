@@ -363,7 +363,8 @@ class AlgtestTestRunner(Thread):
 
         if os.path.isdir(RESULT_PATH):
             try:
-                copy(result_zip, RESULT_PATH, result_zip)
+                copy(result_zip, RESULT_PATH)
+                self.append_text("Copied to USB.")
             except:
                 self.append_text("Failed to copy to USB.")
         else:
