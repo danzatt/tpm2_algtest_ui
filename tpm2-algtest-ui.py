@@ -362,10 +362,16 @@ class AlgtestTestRunner(Thread):
 
     def store_results(self, store_type):
         result_zip = self.out_dir + '.zip'
+        res_path = RESULT_PATH
 
-        if os.path.isdir(RESULT_PATH):
+        if not os.path.isdir(res_path):
+            if os.system("mkdir -p /mnt/algtest && mount /dev/disk/by-label/ALGTEST_RES /mnt/algtest") == 0:
+                res_path = "/mnt/algtest"
+                self.append_text("Successfully mounted ALGTEST_RES partition")
+
+        if os.path.isdir(res_path):
             try:
-                copy(result_zip, RESULT_PATH)
+                copy(result_zip, res_path)
                 self.append_text("Copied to USB. File name: " + os.path.basename(result_zip))
             except:
                 self.append_text("Failed to copy to USB.")
