@@ -22,7 +22,7 @@ from yui import YUI
 from yui import YEvent
 
 IMAGE_TAG = 'tpm2-algtest-ui v1.0'
-RESULT_PATH = "/run/media/liveuser/ALGTEST_RES/"
+RESULT_PATH = "/mnt/algtest"
 
 
 class ISUploader:
@@ -362,16 +362,14 @@ class AlgtestTestRunner(Thread):
 
     def store_results(self, store_type):
         result_zip = self.out_dir + '.zip'
-        res_path = RESULT_PATH
 
-        if not os.path.isdir(res_path):
-            if os.system("mkdir -p /mnt/algtest && mount /dev/disk/by-label/ALGTEST_RES /mnt/algtest") == 0:
-                res_path = "/mnt/algtest"
+        if not os.path.isdir(RESULT_PATH):
+            if os.system("mkdir -p " + RESULT_PATH + " && mount /dev/disk/by-label/ALGTEST_RES " + RESULT_PATH) == 0:
                 self.append_text("Successfully mounted ALGTEST_RES partition")
 
-        if os.path.isdir(res_path):
+        if os.path.isdir(RESULT_PATH):
             try:
-                copy(result_zip, res_path)
+                copy(result_zip, RESULT_PATH)
                 self.append_text("Copied to USB. File name: " + os.path.basename(result_zip))
             except:
                 self.append_text("Failed to copy to USB.")
