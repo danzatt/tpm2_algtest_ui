@@ -14,7 +14,7 @@ import json
 import datetime
 import zipfile
 
-from shutil import copy
+from shutil import copyfile
 from uuid import uuid4
 from tempfile import mkdtemp
 
@@ -362,6 +362,7 @@ class AlgtestTestRunner(Thread):
 
     def store_results(self, store_type):
         result_zip = self.out_dir + '.zip'
+        zip_filename = os.path.basename(result_zip)
 
         if not os.path.isdir(RESULT_PATH):
             if os.system("mkdir -p " + RESULT_PATH + " && mount /dev/disk/by-label/ALGTEST_RES " + RESULT_PATH) == 0:
@@ -369,8 +370,8 @@ class AlgtestTestRunner(Thread):
 
         if os.path.isdir(RESULT_PATH):
             try:
-                copy(result_zip, RESULT_PATH)
-                self.append_text("Copied to USB. File name: " + os.path.basename(result_zip))
+                copyfile(result_zip, os.path.join(RESULT_PATH, zip_filename))
+                self.append_text("Copied to USB. File name: " + zip_filename)
             except:
                 self.append_text("Failed to copy to USB.")
         else:
