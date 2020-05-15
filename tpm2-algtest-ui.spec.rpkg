@@ -1,4 +1,3 @@
-# The following tag is to get correct syntax highlighting for this file in vim text editor
 # vim: syntax=spec
 
 # git_dir_name returns repository name derived from remote Git repository URL
@@ -7,38 +6,20 @@ Name:       {{{ git_dir_name }}}
 # git_dir_version returns version based on commit and tag history of the Git project
 Version:    {{{ git_dir_version }}}
 
-# This can be useful later for adding downstream patches
 Release:    1%{?dist}
-
-# Basic description of the package
 Summary:    GUI/TUI for tpm2-algtest
-
-# License. Hopefully free or at least open-source. We assume GPLv2+ here.
 License:    GPLv2+
-
-# Home page of the project. Can also point to the public Git repository page.
 URL:        https://github.com/danzatt/tpm2-algtest-ui
 
-# Detailed information about the source Git repository and the source commit
-# for the created rpm package
 VCS:        {{{ git_dir_vcs }}}
-
-# git_dir_pack macro places the repository content (the source files) into a tarball
-# and returns its filename. The tarball will be used to build the rpm.
 Source:     {{{ git_dir_pack }}}
-
 Requires:   tpm2-abrmd tpm2-tools python3-yui tpm2-algtest python3-requests
 
-# BuildRequires: cmake make gcc tpm2-tss-devel openssl-devel
-
-# More detailed description of the package
 %description
 GUI/TUI for tpm2-algtest
 
 %global debug_package %{nil}
 
-# The following four sections already describe the rpm build process itself.
-# prep will extract the tarball defined as Source above and descend into it.
 %prep
 {{{ git_dir_setup_macro }}}
 
@@ -60,8 +41,7 @@ cp res/tpm2-algtest-ui.desktop %{buildroot}/%{_datadir}/applications/
 cp -r res/icons %{buildroot}/%{_datadir}/
 
 
-# This lists all the files that are included in the rpm package and that
-# are going to be installed into target system where the rpm is installed.
+# files included in the RPM
 %files
 /usr/bin/tpm2-algtest-ui
 %{_datadir}/icons/
@@ -83,7 +63,5 @@ fi
 
 desktop-file-install %{_datadir}/applications/tpm2-algtest-ui.desktop
 
-# Finally, changes from the latest release of your application are generated from
-# your project's Git history. It will be empty until you make first annotated Git tag.
-%changelog
-{{{ git_dir_changelog }}}
+# %changelog
+# {{{ git_dir_changelog }}}
