@@ -1,5 +1,8 @@
 #!/usr/bin/python3
 
+# Copyright (C) 2020 Daniel Zatovic
+# parts Copyright (C) 2019 Simon Struk
+
 from collections import deque
 from enum import Enum, auto
 
