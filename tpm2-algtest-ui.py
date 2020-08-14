@@ -26,6 +26,7 @@ from yui import YEvent
 
 IMAGE_TAG = 'tpm2-algtest-ui v1.0'
 RESULT_PATH = "/mnt/algtest"
+TCTI_SPEC = "device:/dev/tpm0"
 
 
 class ISUploader:
@@ -283,7 +284,7 @@ class AlgtestTestRunner(Thread):
         super().__init__(name="AlgtestTestRunner")
         self.out_dir = out_dir
         self.detail_dir = os.path.join(self.out_dir, 'detail')
-        self.cmd = ["tpm2_algtest", '--outdir=' + self.detail_dir, "-s"]
+        self.cmd = ["tpm2_algtest", "-T", TCTI_SPEC, '--outdir=' + self.detail_dir, "-s"]
 
         self.percentage = 0
         self.text = []
