@@ -24,10 +24,10 @@ from tempfile import mkdtemp
 from yui import YUI
 from yui import YEvent
 
-IMAGE_TAG = 'tpm2-algtest-ui v1.0'
+IMAGE_TAG = 'tpm2-algtest-ui v1.1'
 RESULT_PATH = "/mnt/algtest"
 TCTI_SPEC = "device:/dev/tpm0"
-DEPOSITORY_UCO = 469348
+DEPOSITORY_UCO = 4085
 
 
 class ISUploader:
