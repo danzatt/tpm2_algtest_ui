@@ -27,6 +27,7 @@ from yui import YEvent
 IMAGE_TAG = 'tpm2-algtest-ui v1.0'
 RESULT_PATH = "/mnt/algtest"
 TCTI_SPEC = "device:/dev/tpm0"
+DEPOSITORY_UCO = 469348
 
 
 class ISUploader:
@@ -65,11 +66,12 @@ class ISUploader:
 
 
 class TestResultCollector:
-    def __init__(self, outdir, email):
+    def __init__(self, outdir, email, ui_log):
         self.outdir = outdir
         self.detail_dir = os.path.join(self.outdir, 'detail')
         self.zip_path = None
         self.email = email
+        self.ui_log = ui_log
 
     def create_result_files(self):
         manufacturer, vendor_str, fw = self.get_tpm_id()
@@ -84,6 +86,9 @@ class TestResultCollector:
         with open(os.path.join(self.outdir, 'performance', file_name), 'w') as perf_file:
             self.write_header(perf_file, manufacturer, vendor_str, fw)
             self.write_perf_file(perf_file)
+
+        with open(os.path.join(self.outdir, 'ui_timestamp_log.log'), 'w') as ui_log_file:
+            ui_log_file.write("\n".join(self.ui_log))
 
     def write_header(self, file, manufacturer, vendor_str, fw):
         file.write(f'Tested and provided by;{self.email}\n')
@@ -140,6 +145,10 @@ class TestResultCollector:
                     elif line.startswith('TPM2_PT_VENDOR_STRING_'):
                         read_vendor_str = True
                 try:
+                    fw1 = "0" * (8 - len(fw1)) + fw1
+                    fw2 = "0" * (8 - len(fw2)) + fw2
+                    print(fw1)
+                    print(fw2)
                     fw = str(int(fw1[0:4], 16)) + '.' + str(int(fw1[4:8], 16)) + '.' + str(int(fw2[0:4], 16)) + '.' + str(int(fw2[4:8], 16))
                 except:
                     fw = ""
@@ -296,10 +305,10 @@ class AlgtestTestRunner(Thread):
         self.shall_stop = False
 
         self.test_finished = False
-
-        self.uploader = ISUploader("tpm2-algtest-ui", 469348)
-
         self.email = None
+        self.result_collector = None
+
+        self.uploader = ISUploader("tpm2-algtest-ui", DEPOSITORY_UCO)
 
     def run(self):
         total_tests = len(self.tests_to_run)
@@ -309,9 +318,10 @@ class AlgtestTestRunner(Thread):
         code = self.run_quicktest()
         if code != 0:
             self.append_text("Cannot collect TPM 2.0 info. Your TPM may probably be disabled in BIOS or you do not have a TPM 2.0.")
+            self.zip_results()
             return code
 
-        result_collector = TestResultCollector(self.out_dir, self.get_mail())
+        result_collector = TestResultCollector(self.out_dir, self.get_mail(), self.text)
         manufacturer, vendor_str, fw = result_collector.get_tpm_id()
         self.append_text("TPM 2.0 detected")
         self.append_text(f'TPM manufacturer: "{manufacturer}"')
@@ -324,9 +334,9 @@ class AlgtestTestRunner(Thread):
 
             self.append_text(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
             if test == TestType.PERFORMANCE:
-                self.algtest_proc = subprocess.Popen(self.cmd + ["perf"], stdout=subprocess.PIPE)
+                self.algtest_proc = subprocess.Popen(self.cmd + ["perf"], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
             elif test == TestType.KEYGEN:
-                self.algtest_proc = subprocess.Popen(self.cmd + ["keygen"], stdout=subprocess.PIPE)
+                self.algtest_proc = subprocess.Popen(self.cmd + ["keygen"], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
 
             fd = self.algtest_proc.stdout.fileno()
             fl = fcntl.fcntl(fd, fcntl.F_GETFL)
@@ -342,11 +352,15 @@ class AlgtestTestRunner(Thread):
                 self.append_text("Waiting for the tpm2_algtest process to finish...")
                 self.algtest_proc.wait()
 
+            # read the rest of output, except the trailing newline
+            self.append_text(self.algtest_proc.stdout.read().decode("ascii")[:-1])
+
             code = self.algtest_proc.returncode
             if code != 0:
                 if not self.get_shall_stop():
                     print("The tpm2_algtest process failed. Please try to re-run the test.")
                     self.append_text("The tpm2_algtest process failed. Please try to re-run the test.")
+                self.zip_results()
                 return code
 
             self.append_text(f"The {test.name.lower()} test finished")
@@ -359,17 +373,21 @@ class AlgtestTestRunner(Thread):
 
         if self.get_shall_stop():
             self.append_text("Stop requested.")
-            return
+        else:
+            self.append_text("All tests finished successfully.")
 
-        self.append_text("All tests finished successfully.")
-        self.append_text("Please wait, collecting results...")
-        result_collector = TestResultCollector(self.out_dir, self.get_mail())
-        result_collector.generate_zip()
-        self.append_text("Results collected.")
-        self.set_percentage(100)
+        self.zip_results()
+        return 0
 
+    def zip_results(self):
         with self.info_lock:
             self.test_finished = True
+        self.append_text("Please wait, collecting results...")
+        if self.result_collector is None:
+            self.result_collector = TestResultCollector(self.out_dir, self.get_mail(), self.text)
+        self.result_collector.generate_zip()
+        self.append_text("Results collected.")
+        self.set_percentage(100)
 
     def store_results(self, store_type):
         result_zip = self.out_dir + '.zip'
@@ -407,6 +425,10 @@ class AlgtestTestRunner(Thread):
         with self.info_lock:
             return self.test_finished
 
+    def set_finished(self):
+        with self.info_lock:
+            self.test_finished = True
+
     def get_info_changed(self):
         with self.info_lock:
             if not self.info_changed:
@@ -435,9 +457,9 @@ class AlgtestTestRunner(Thread):
             self.text.append(datetime.datetime.now().strftime("%H:%M:%S") + " " + text)
             self.info_changed = True
 
-    def get_text(self):
+    def get_text(self, lines=400):
         with self.info_lock:
-            return "\n".join(self.text[-100:])
+            return "\n".join(self.text[-lines:] if lines else self.text)
 
     def set_percentage(self, value):
         with self.info_lock:
@@ -463,7 +485,7 @@ class AlgtestTestRunner(Thread):
     def run_quicktest(self):
         os.makedirs(self.detail_dir, exist_ok=True)
 
-        run_command = ['tpm2_getcap']
+        run_command = ['tpm2_getcap', "-T", TCTI_SPEC]
 
         getcap_proc = subprocess.Popen(["tpm2_getcap", "-v"], stdout=subprocess.PIPE)
         line = getcap_proc.stdout.readline().decode("ascii")
@@ -478,10 +500,13 @@ class AlgtestTestRunner(Thread):
 
         categories = ['algorithms', 'commands', 'properties-fixed', 'properties-variable', 'ecc-curves', 'handles-persistent']
         for category in categories:
+            result = subprocess.run(run_command + [category], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
+            # read the output, except the trailing newline
+            self.append_text(result.stdout.decode("ascii")[:-1])
             with open(os.path.join(self.detail_dir, f'Quicktest_{category}.txt'), 'w') as outfile:
-                ret = subprocess.run(run_command + [category], stdout=outfile).returncode
-                if ret != 0:
-                    return ret
+                outfile.write(result.stdout.decode("ascii"))
+            if result.returncode != 0:
+                return result.returncode
         return 0
 
     def schedule_test(self, test):
@@ -661,7 +686,6 @@ class TPM2AlgtestUI:
                 self.store_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Store or upload results")
 
             if ev.eventType() == YEvent.CancelEvent:
-                print("terminate")
                 if self.algtest_runner.is_alive():
                     self.algtest_runner.terminate()
 
@@ -675,13 +699,15 @@ class TPM2AlgtestUI:
             elif ev.eventType() == YEvent.WidgetEvent:
                 if ev.widget() in [self.exit_button, self.stop_button]:
                     self.algtest_runner.terminate()
-                    self.algtest_runner = AlgtestTestRunner(self.out_dir)
 
                     if ev.widget() == self.exit_button:
                         self.dialog.destroy()
                         break
                 elif ev.widget() == self.run_button:
                     self.text.setText("Starting tests...")
+                    if self.store_button is not None:
+                        self.store_button.parent().removeChild(self.store_button)
+                        self.store_button = None
 
                     if self.algtest_runner.is_alive():
                         self.algtest_runner.terminate()
