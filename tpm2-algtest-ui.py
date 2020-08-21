@@ -380,14 +380,14 @@ class AlgtestTestRunner(Thread):
         return 0
 
     def zip_results(self):
-        with self.info_lock:
-            self.test_finished = True
         self.append_text("Please wait, collecting results...")
         if self.result_collector is None:
             self.result_collector = TestResultCollector(self.out_dir, self.get_mail(), self.text)
         self.result_collector.generate_zip()
         self.append_text("Results collected.")
         self.set_percentage(100)
+        with self.info_lock:
+            self.test_finished = True
 
     def store_results(self, store_type):
         result_zip = self.out_dir + '.zip'
