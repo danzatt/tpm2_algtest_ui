@@ -66,14 +66,16 @@ class ISUploader:
 
 
 class TestResultCollector:
-    def __init__(self, outdir, email, ui_log):
+    def __init__(self, outdir, email, ui_log, watchdog_tick=None):
         self.outdir = outdir
         self.detail_dir = os.path.join(self.outdir, 'detail')
         self.zip_path = None
         self.email = email
         self.ui_log = ui_log
+        self.watchdog_tick = watchdog_tick
 
     def create_result_files(self):
+        self.tick()
         manufacturer, vendor_str, fw = self.get_tpm_id()
         file_name = manufacturer + '_' + vendor_str + '_' + fw + '.csv'
 
@@ -81,14 +83,17 @@ class TestResultCollector:
         with open(os.path.join(self.outdir, 'results', file_name), 'w') as support_file:
             self.write_header(support_file, manufacturer, vendor_str, fw)
             self.write_support_file(support_file)
+        self.tick()
 
         os.makedirs(os.path.join(self.outdir, 'performance'), exist_ok=True)
         with open(os.path.join(self.outdir, 'performance', file_name), 'w') as perf_file:
             self.write_header(perf_file, manufacturer, vendor_str, fw)
             self.write_perf_file(perf_file)
+        self.tick()
 
         with open(os.path.join(self.outdir, 'ui_timestamp_log.log'), 'w') as ui_log_file:
             ui_log_file.write("\n".join(self.ui_log))
+        self.tick()
 
     def write_header(self, file, manufacturer, vendor_str, fw):
         file.write(f'Tested and provided by;{self.email}\n')
@@ -264,18 +269,26 @@ class TestResultCollector:
         return avg_op * 1000, min_op * 1000, max_op * 1000, total, success, fail, error # sec -> ms
 
     def zip(self):
+        self.tick()
         self.zip_path = self.outdir + '.zip'
         zipf = zipfile.ZipFile(self.zip_path, 'w', zipfile.ZIP_DEFLATED)
         for root, _, files in os.walk(self.outdir):
             for file in files:
+                self.tick()
                 file_path = os.path.join(root, file)
                 zipf.write(file_path, file_path[len(self.outdir):])
+                self.tick()
+        self.tick()
         zipf.close()
 
     def generate_zip(self):
         self.create_result_files()
         self.zip()
         return self.zip_path
+
+    def tick(self, alive=True):
+        if self.watchdog_tick is not None:
+            self.watchdog_tick(alive)
 
 
 class TestType(Enum):
@@ -289,7 +302,7 @@ class StoreType(Enum):
     CANCEL = auto()
 
 class AlgtestTestRunner(Thread):
-    def __init__(self, out_dir):
+    def __init__(self, out_dir, watchdog_tick = None):
         super().__init__(name="AlgtestTestRunner")
         self.out_dir = out_dir
         self.detail_dir = os.path.join(self.out_dir, 'detail')
@@ -297,6 +310,8 @@ class AlgtestTestRunner(Thread):
 
         self.percentage = 0
         self.text = []
+        self.status = ""
+        self.watchdog_tick = watchdog_tick
         self.info_lock = Lock()
         self.info_changed = True
 
@@ -311,17 +326,23 @@ class AlgtestTestRunner(Thread):
         self.uploader = ISUploader("tpm2-algtest-ui", DEPOSITORY_UCO)
 
     def run(self):
+        self.set_percentage(1)
         total_tests = len(self.tests_to_run)
         current_test = 1
 
         self.append_text("Collecting basic TPM info...")
+        self.set_status("Collecting basic TPM info...")
+        self.tick()
+
         code = self.run_quicktest()
         if code != 0:
             self.append_text("Cannot collect TPM 2.0 info. Your TPM may probably be disabled in BIOS or you do not have a TPM 2.0.")
+            self.set_status("Cannot collect TPM 2.0 info.")
             self.zip_results()
+            self.tick(False)
             return code
 
-        result_collector = TestResultCollector(self.out_dir, self.get_mail(), self.text)
+        result_collector = TestResultCollector(self.out_dir, self.get_mail(), self.text, self.watchdog_tick)
         manufacturer, vendor_str, fw = result_collector.get_tpm_id()
         self.append_text("TPM 2.0 detected")
         self.append_text(f'TPM manufacturer: "{manufacturer}"')
@@ -333,6 +354,8 @@ class AlgtestTestRunner(Thread):
             os.makedirs(self.detail_dir, exist_ok=True)
 
             self.append_text(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
+            self.set_status(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
+            self.tick()
             if test == TestType.PERFORMANCE:
                 self.algtest_proc = subprocess.Popen(self.cmd + ["perf"], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
             elif test == TestType.KEYGEN:
@@ -360,31 +383,47 @@ class AlgtestTestRunner(Thread):
                 if not self.get_shall_stop():
                     print("The tpm2_algtest process failed. Please try to re-run the test.")
                     self.append_text("The tpm2_algtest process failed. Please try to re-run the test.")
+                    self.set_status("The tpm2_algtest process failed.")
+                    self.tick(False)
+                else:
+                    self.set_status("Stop requested.")
+                    self.tick(False)
                 self.zip_results()
+                self.tick(False)
                 return code
 
             self.append_text(f"The {test.name.lower()} test finished")
 
             if test == TestType.KEYGEN and not self.get_shall_stop():
-                self.append_text(f"Computing RSA private keys...")
+                self.append_text("Computing RSA private keys...")
+                self.set_status("Computing RSA private keys...")
+                self.tick()
                 self.keygen_post()
 
             current_test += 1
 
         if self.get_shall_stop():
             self.append_text("Stop requested.")
+            self.set_status("Stop requested.")
         else:
             self.append_text("All tests finished successfully.")
+            self.set_status("All tests finished successfully.")
 
         self.zip_results()
+
+        self.tick(False)
         return 0
 
     def zip_results(self):
         self.append_text("Please wait, collecting results...")
+        self.set_status("Please wait, collecting results...")
+        self.tick()
         if self.result_collector is None:
-            self.result_collector = TestResultCollector(self.out_dir, self.get_mail(), self.text)
+            self.result_collector = TestResultCollector(self.out_dir, self.get_mail(), self.text, self.watchdog_tick)
         self.result_collector.generate_zip()
         self.append_text("Results collected.")
+        self.set_status("Results collected.")
+
         self.set_percentage(100)
         with self.info_lock:
             self.test_finished = True
@@ -400,6 +439,7 @@ class AlgtestTestRunner(Thread):
         if os.path.isdir(RESULT_PATH):
             try:
                 copyfile(result_zip, os.path.join(RESULT_PATH, zip_filename))
+                os.sync()
                 self.append_text("Copied to USB. File name: " + zip_filename)
             except:
                 self.append_text("Failed to copy to USB.")
@@ -442,12 +482,15 @@ class AlgtestTestRunner(Thread):
             return
 
         while self.algtest_proc.poll() is None and not self.get_shall_stop():
+            self.tick()
             line = self.algtest_proc.stdout.readline().decode("ascii")
             while line != "" and not self.get_shall_stop():
                 if 2 < len(line) <= 5 and line[-2] == "%":
                     current_test_percentage = int(line[:-2]) / 100
                     absolute_percentage = ((current_test - 1) / total_tests) + (1/total_tests) * current_test_percentage
-                    self.set_percentage(int(absolute_percentage * 100))
+                    absolute_percentage = int(absolute_percentage * 100)
+                    absolute_percentage = min(absolute_percentage + 1, 100)  # at this point test is started, so we make the progress at least 1 percent
+                    self.set_percentage(absolute_percentage)
                 else:
                     self.append_text(line[:-1])
                 line = self.algtest_proc.stdout.readline().decode("ascii")
@@ -460,6 +503,19 @@ class AlgtestTestRunner(Thread):
     def get_text(self, lines=400):
         with self.info_lock:
             return "\n".join(self.text[-lines:] if lines else self.text)
+
+    def set_status(self, value):
+        with self.info_lock:
+            self.status = value
+            self.info_changed = True
+
+    def get_status(self):
+        with self.info_lock:
+            return self.status
+
+    def tick(self, alive=True):
+        if self.watchdog_tick is not None:
+            self.watchdog_tick(alive)
 
     def set_percentage(self, value):
         with self.info_lock:
@@ -494,19 +550,24 @@ class AlgtestTestRunner(Thread):
         version = line[version_begin:version_end].split(".")
         version = list(map(int, version))
 
+        self.tick()
+
         # newer versions take category directly as an argument, older need -c
         if version < [4, 0, 0]:
             run_command.append("-c")
 
         categories = ['algorithms', 'commands', 'properties-fixed', 'properties-variable', 'ecc-curves', 'handles-persistent']
         for category in categories:
+            self.tick()
             result = subprocess.run(run_command + [category], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
             # read the output, except the trailing newline
             self.append_text(result.stdout.decode("ascii")[:-1])
+            self.tick()
             with open(os.path.join(self.detail_dir, f'Quicktest_{category}.txt'), 'w') as outfile:
                 outfile.write(result.stdout.decode("ascii"))
             if result.returncode != 0:
                 return result.returncode
+        self.tick()
         return 0
 
     def schedule_test(self, test):
@@ -580,10 +641,6 @@ class AlgtestTestRunner(Thread):
 
 class TPM2AlgtestUI:
     def __init__(self):
-        self.out_dir = os.path.join(mkdtemp(), "tpm2-algtest", "algtest_result_" + str(uuid4()))
-        os.makedirs(self.out_dir, exist_ok=True)
-        self.algtest_runner = AlgtestTestRunner(self.out_dir)
-
         self.dialog = None
         self.vbox = None
         self.group = None
@@ -592,6 +649,7 @@ class TPM2AlgtestUI:
         self.keygen_button = None
         self.perf_button = None
         self.progress_bar = None
+        self.busy_indicator = None
         self.text = None
         self.bottom_buttons = None
         self.run_button = None
@@ -604,6 +662,10 @@ class TPM2AlgtestUI:
         self.popup_upload = None
         self.popup_usb = None
         self.popup_cancel = None
+
+        self.out_dir = os.path.join(mkdtemp(), "tpm2-algtest", "algtest_result_" + str(uuid4()))
+        os.makedirs(self.out_dir, exist_ok=True)
+        self.algtest_runner = AlgtestTestRunner(self.out_dir, lambda alive: self.busy_indicator.setAlive(alive))
 
     def construct_ui(self):
         YUI.application().setApplicationIcon("/usr/share/icons/hicolor/256x256/apps/tpm2-algtest.png")
@@ -638,6 +700,9 @@ class TPM2AlgtestUI:
 
         self.email_field = YUI.widgetFactory().createInputField(self.vbox, "Your email (optional): ")
 
+        self.busy_indicator = YUI.widgetFactory().createBusyIndicator(self.vbox, "Test status", 25000)
+        self.busy_indicator.setAlive(False)
+
         self.progress_bar = YUI.widgetFactory().createProgressBar(self.vbox, "Test progress", 100)
         self.progress_bar.setValue(0)
 
@@ -646,14 +711,14 @@ class TPM2AlgtestUI:
         self.text.setAutoScrollDown(True)
 
         self.bottom_buttons = YUI.widgetFactory().createHBox(self.vbox)
-        self.run_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Start")
+        start_highlight_box = YUI.widgetFactory().createHBox(self.bottom_buttons)
+        self.run_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start")
+        self.dialog.highlight(start_highlight_box)
         self.dialog.setDefaultButton(self.run_button)
         self.stop_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Stop")
         self.exit_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Exit")
 
-        shutdown_highlight_box = YUI.widgetFactory().createHBox(self.bottom_buttons)
-        self.shutdown_button = YUI.widgetFactory().createPushButton(shutdown_highlight_box, "&Shutdown PC")
-        self.dialog.highlight(shutdown_highlight_box)
+        self.shutdown_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Shutdown PC")
 
         self.dialog.open()
         self.dialog.activate()
@@ -711,7 +776,7 @@ class TPM2AlgtestUI:
 
                     if self.algtest_runner.is_alive():
                         self.algtest_runner.terminate()
-                    self.algtest_runner = AlgtestTestRunner(self.out_dir)
+                    self.algtest_runner = AlgtestTestRunner(self.out_dir, lambda alive: self.busy_indicator.setAlive(alive))
                     self.algtest_runner.set_mail(self.email_field.value())
 
                     if self.both_button.value() or self.keygen_button.value():
@@ -741,6 +806,7 @@ class TPM2AlgtestUI:
                 if self.algtest_runner.get_info_changed():
                     self.progress_bar.setValue(self.algtest_runner.get_percentage())
                     self.text.setText(self.algtest_runner.get_text())
+                    self.busy_indicator.setLabel(self.algtest_runner.get_status())
 
 
 if __name__ == "__main__":
