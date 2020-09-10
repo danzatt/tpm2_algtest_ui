@@ -435,6 +435,14 @@ class TestResultCollector:
             self.watchdog_tick(alive)
 
 
+class AlgtestState(Enum):
+    NOT_RUNNING = auto()
+    RUNNING = auto()
+    SUCCESS = auto()
+    FAILED = auto()
+    STOPPED = auto()
+
+
 class TestType(Enum):
     PERFORMANCE = auto()
     KEYGEN = auto()
@@ -454,7 +462,9 @@ class AlgtestTestRunner(Thread):
 
         self.percentage = 0
         self.text = []
+        self.statuses = []
         self.status = ""
+        self.state = AlgtestState.NOT_RUNNING
         self.watchdog_tick = watchdog_tick
         self.info_lock = Lock()
         self.info_changed = True
@@ -470,6 +480,7 @@ class AlgtestTestRunner(Thread):
         self.uploader = ISUploader("tpm2-algtest-ui", DEPOSITORY_UCO)
 
     def run(self):
+        self.set_state(AlgtestState.RUNNING)
         self.set_percentage(1)
         total_tests = len(self.tests_to_run)
         current_test = 1
@@ -482,6 +493,7 @@ class AlgtestTestRunner(Thread):
         if code != 0:
             self.append_text("Cannot collect TPM 2.0 info. Your TPM may probably be disabled in BIOS or you do not have a TPM 2.0.")
             self.set_status("Cannot collect TPM 2.0 info.")
+            self.set_state(AlgtestState.FAILED)
             self.zip_results()
             self.tick(False)
             return code
@@ -528,9 +540,11 @@ class AlgtestTestRunner(Thread):
                     print("The tpm2_algtest process failed. Please try to re-run the test.")
                     self.append_text("The tpm2_algtest process failed. Please try to re-run the test.")
                     self.set_status("The tpm2_algtest process failed.")
+                    self.set_state(AlgtestState.FAILED)
                     self.tick(False)
                 else:
                     self.set_status("Stop requested.")
+                    self.set_state(AlgtestState.STOPPED)
                     self.tick(False)
                 self.zip_results()
                 self.tick(False)
@@ -546,17 +560,22 @@ class AlgtestTestRunner(Thread):
 
             current_test += 1
 
+        r = None
         if self.get_shall_stop():
             self.append_text("Stop requested.")
             self.set_status("Stop requested.")
+            r = 1
+            self.set_state(AlgtestState.STOPPED)
         else:
+            r = 0
+            self.set_state(AlgtestState.SUCCESS)
             self.append_text("All tests finished successfully.")
             self.set_status("All tests finished successfully.")
 
         self.zip_results()
 
         self.tick(False)
-        return 0
+        return r
 
     def zip_results(self):
         self.append_text("Please wait, collecting results...")
@@ -589,6 +608,7 @@ class AlgtestTestRunner(Thread):
                 os.sync()
             except:
                 self.append_text("Failed to copy to USB.")
+                self.set_status("Failed to copy to USB.")
         else:
             self.append_text("ALGTEST_RES partition is not mounted. Can not store on USB.")
 
@@ -596,8 +616,10 @@ class AlgtestTestRunner(Thread):
             self.append_text("Uploading results...")
             if self.uploader.upload(result_zip):
                 self.append_text("Results uploaded successfully.")
+                self.set_status("Results uploaded successfully.")
             else:
                 self.append_text("Results upload failed.")
+                self.set_status("Results upload failed.")
 
     def set_mail(self, email):
         with self.info_lock:
@@ -650,10 +672,24 @@ class AlgtestTestRunner(Thread):
         with self.info_lock:
             return "\n".join(self.text[-lines:] if lines else self.text)
 
-    def set_status(self, value):
+    def set_state(self, state):
         with self.info_lock:
-            self.status = value
+            self.state = state
             self.info_changed = True
+
+    def get_state(self):
+        with self.info_lock:
+            return self.state
+
+    def set_status(self, status):
+        with self.info_lock:
+            self.status = status
+            self.statuses.append("<b>" + datetime.datetime.now().strftime("%H:%M:%S") + "</b>: " + status)
+            self.info_changed = True
+
+    def get_statuses(self):
+        with self.info_lock:
+            return "<br>".join(self.statuses)
 
     def get_status(self):
         with self.info_lock:
@@ -801,7 +837,9 @@ class TPM2AlgtestUI:
         self.reset_ui_members()
 
         self.simple_mode = True
+        self.result_stored = False
 
+        #  TODO: init to None
         self.out_dir = os.path.join(mkdtemp(), "tpm2-algtest", "algtest_result_" + str(uuid4()))
         os.makedirs(self.out_dir, exist_ok=True)
         self.algtest_runner = AlgtestTestRunner(self.out_dir, lambda alive: self.busy_indicator.setAlive(alive))
@@ -907,7 +945,7 @@ class TPM2AlgtestUI:
         self.vbox = YUI.widgetFactory().createVBox(self.dialog)
 
         self.email_field = YUI.widgetFactory().createInputField(self.vbox, "Your email (optional): ")
-        self.shutdown_checkbox = YUI.widgetFactory().createCheckBox(self.vbox, "Shutdown when test finishes")
+        self.shutdown_checkbox = YUI.widgetFactory().createCheckBox(self.vbox, "Shutdown when test finishes successfully")
 
         self.running_label = YUI.widgetFactory().createLabel(self.vbox, "Test is not running.")
 
@@ -916,6 +954,9 @@ class TPM2AlgtestUI:
 
         self.progress_bar = YUI.widgetFactory().createProgressBar(self.vbox, "Test progress", 100)
         self.progress_bar.setValue(0)
+
+        self.text = YUI.widgetFactory().createRichText(self.vbox, "")
+        self.text.setAutoScrollDown(True)
 
         self.bottom_buttons = YUI.widgetFactory().createHBox(self.vbox)
         start_highlight_box = YUI.widgetFactory().createHBox(self.bottom_buttons)
@@ -973,10 +1014,11 @@ class TPM2AlgtestUI:
         while self.dialog is not None and self.dialog.isOpen():
             ev = self.dialog.topmostDialog().waitForEvent(100)
 
-            if self.algtest_runner.is_finished() and self.dialog.topmostDialog() != self.popup and self.store_button is None:
+            if self.algtest_runner.is_finished() and self.dialog.topmostDialog() != self.popup and not self.result_stored:
                 if self.simple_mode:
                     self.algtest_runner.store_results(StoreType.STORE_USB)
-                    if self.shutdown_checkbox.isChecked():
+                    self.result_stored = True
+                    if self.shutdown_checkbox.isChecked() and self.algtest_runner.get_state() == AlgtestState.SUCCESS:
                         os.system("shutdown -h now")
                 else:
                     self.popup_ask_upload()
@@ -1005,9 +1047,13 @@ class TPM2AlgtestUI:
                     if self.store_button is not None:
                         self.store_button.parent().removeChild(self.store_button)
                         self.store_button = None
+                        self.result_stored = False
 
                     if self.algtest_runner.is_alive():
                         self.algtest_runner.terminate()
+
+                    self.out_dir = os.path.join(mkdtemp(), "tpm2-algtest", "algtest_result_" + str(uuid4()))
+                    os.makedirs(self.out_dir, exist_ok=True)
                     self.algtest_runner = AlgtestTestRunner(self.out_dir, lambda alive: self.busy_indicator.setAlive(alive))
                     self.algtest_runner.set_mail(self.email_field.value())
 
@@ -1054,16 +1100,24 @@ class TPM2AlgtestUI:
             elif ev.eventType() == YEvent.TimeoutEvent:
                 if self.algtest_runner.get_info_changed():
                     self.progress_bar.setValue(self.algtest_runner.get_percentage())
-                    if self.text is not None:
+                    if self.simple_mode:
+                        self.text.setText(self.algtest_runner.get_statuses())
+                    else:
                         self.text.setText(self.algtest_runner.get_text())
                     self.busy_indicator.setLabel(self.algtest_runner.get_status())
 
-                if self.algtest_runner is not None and self.algtest_runner.is_alive():
-                    self.running_label.setText("Test is running, please do not power off your computer and plug it into AC.")
-                    self.running_label.setUseBoldFont(True)
-                else:
-                    self.running_label.setText("Test is not running.")
-                    self.running_label.setUseBoldFont(False)
+                    if self.algtest_runner.get_state() == AlgtestState.NOT_RUNNING:
+                        self.running_label.setText("Test is not yet running")
+                        self.running_label.setUseBoldFont(False)
+                    elif self.algtest_runner.get_state() == AlgtestState.RUNNING:
+                        self.running_label.setText("Test is running, please do not power off your computer and plug it into AC")
+                        self.running_label.setUseBoldFont(True)
+                    elif self.algtest_runner.get_state() == AlgtestState.SUCCESS:
+                        self.running_label.setText("Test finished successfully")
+                        self.running_label.setUseBoldFont(True)
+                    elif self.algtest_runner.get_state() == AlgtestState.FAILED:
+                        self.running_label.setText("Test failed")
+                        self.running_label.setUseBoldFont(True)
 
 
 if __name__ == "__main__":
