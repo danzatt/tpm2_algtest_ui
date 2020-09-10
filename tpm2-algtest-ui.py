@@ -1023,8 +1023,9 @@ class TPM2AlgtestUI:
                     if self.shutdown_checkbox.isChecked() and self.algtest_runner.get_state() == AlgtestState.SUCCESS:
                         os.system("shutdown -h now")
                 else:
-                    self.popup_ask_upload()
-                    self.store_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Store or upload results")
+                    if self.store_button is None:
+                        self.popup_ask_upload()
+                        self.store_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Store or upload results")
 
             if ev.eventType() == YEvent.CancelEvent:
                 if self.algtest_runner.is_alive():
@@ -1115,10 +1116,16 @@ class TPM2AlgtestUI:
                         self.running_label.setText("Test is running, please do not power off your computer and plug it into AC")
                         self.running_label.setUseBoldFont(True)
                     elif self.algtest_runner.get_state() == AlgtestState.SUCCESS:
-                        self.running_label.setText("Test finished successfully")
+                        if self.result_stored:
+                            self.running_label.setText("Test finished successfully and the result was stored. You can exit now.")
+                        else:
+                            self.running_label.setText("Testing completed, storing the result")
                         self.running_label.setUseBoldFont(True)
                     elif self.algtest_runner.get_state() == AlgtestState.FAILED:
-                        self.running_label.setText("Test failed")
+                        if self.result_stored:
+                            self.running_label.setText("Test failed and the partial result was stored. Try to re-run the test.")
+                        else:
+                            self.running_label.setText("Test failed, storing the partial result")
                         self.running_label.setUseBoldFont(True)
 
 
