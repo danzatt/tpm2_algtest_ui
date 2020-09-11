@@ -26,11 +26,11 @@ from yui import YEvent
 
 IMAGE_TAG = 'tpm2-algtest-ui v1.2'
 RESULT_PATH = "/mnt/algtest"
-TCTI_SPEC = "device:/dev/tpm0"
-DEPOSITORY_UCO = 4085
+TCTI_SPEC = "device:/dev/tpm1"
+DEPOSITORY_UCO = 469348
 INFO_MESSAGE = \
 """<b>Experiment</b>: Analysis of Trusted Platform Modules
-<b>Research institute</b>: CRoCS laboratory, Masaryk University and RedHat
+<b>Research institute</b>: CRoCS laboratory, Masaryk University and Red Hat
 <b>Contact person</b>: Petr Svenda &lt;svenda@fi.muni.cz&gt;
 
 <b>What to do:</b>
@@ -92,7 +92,7 @@ the data collected later as an open research dataset.
 
 INFO_MESSAGE_PLAIN = \
 """Experiment: Analysis of Trusted Platform Modules
-Research institute: CRoCS laboratory, Masaryk University and RedHat
+Research institute: CRoCS laboratory, Masaryk University and Red Hat
 Contact person: Petr Svenda <svenda@fi.muni.cz>
 
 What to do:
@@ -216,16 +216,17 @@ class TestResultCollector:
         manufacturer, vendor_str, fw = self.get_tpm_id()
         self.tick()
         system_manufacturer, product_name, system_version = self.get_system_id()
-        file.write(f'Tested and provided by;{self.email}\n')
+        if self.email is not None:
+            file.write(f'Tested and provided by;{self.email}\n')
         file.write(f'Execution date/time;{datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")}\n')
         file.write(f'Manufacturer;{manufacturer}\n')
         file.write(f'Vendor string;{vendor_str}\n')
         file.write(f'Firmware version;{fw}\n')
         file.write(f'Image tag;{IMAGE_TAG}\n')
         file.write(f'TPM devices;{";".join(glob.glob("/dev/tpm*"))}\n')
-        file.write(f'System manufacturer;{system_manufacturer}\n')
-        file.write(f'System product name;{product_name}\n')
-        file.write(f'System version;{system_version}\n\n')
+        file.write(f'Device manufacturer;{system_manufacturer}\n')
+        file.write(f'Device name;{product_name}\n')
+        file.write(f'Device version;{system_version}\n\n')
 
     def get_system_id(self):
         manufacturer = None
@@ -864,7 +865,7 @@ class TPM2AlgtestUI:
         self.info_button = None
         self.advanced_button = None
         self.shutdown_checkbox = None
-        self.email_field = None
+        # self.email_field = None
 
         self.popup_info = None
         self.popup_info_hide_button = None
@@ -908,7 +909,7 @@ class TPM2AlgtestUI:
         #   "We may need to contact you in the future if we need more info.\n" \
         #   "The email address won't be shared with anybody and you will not receive any advertisement.\n")
 
-        self.email_field = YUI.widgetFactory().createInputField(self.vbox, "Your email (optional): ")
+        # self.email_field = YUI.widgetFactory().createInputField(self.vbox, "Your email (optional): ")
 
         self.running_label = YUI.widgetFactory().createLabel(self.vbox, "Test is not running.")
 
@@ -946,8 +947,7 @@ class TPM2AlgtestUI:
 
         self.vbox = YUI.widgetFactory().createVBox(self.dialog)
 
-        self.email_field = YUI.widgetFactory().createInputField(self.vbox, "Your email (optional): ")
-        self.shutdown_checkbox = YUI.widgetFactory().createCheckBox(self.vbox, "Shutdown when test finishes successfully")
+        # self.email_field = YUI.widgetFactory().createInputField(self.vbox, "Your email (optional): ")
 
         self.running_label = YUI.widgetFactory().createLabel(self.vbox, "Test is not running.")
 
@@ -956,6 +956,8 @@ class TPM2AlgtestUI:
 
         self.progress_bar = YUI.widgetFactory().createProgressBar(self.vbox, "Test progress", 100)
         self.progress_bar.setValue(0)
+
+        self.shutdown_checkbox = YUI.widgetFactory().createCheckBox(self.vbox, "Shutdown when test finishes successfully")
 
         self.text = YUI.widgetFactory().createRichText(self.vbox, "")
         self.text.setAutoScrollDown(True)
@@ -1058,7 +1060,7 @@ class TPM2AlgtestUI:
                     self.out_dir = os.path.join(mkdtemp(), "tpm2-algtest", "algtest_result_" + str(uuid4()))
                     os.makedirs(self.out_dir, exist_ok=True)
                     self.algtest_runner = AlgtestTestRunner(self.out_dir, lambda alive: self.busy_indicator.setAlive(alive))
-                    self.algtest_runner.set_mail(self.email_field.value())
+                    # self.algtest_runner.set_mail(self.email_field.value())
 
                     if self.simple_mode:
                             self.algtest_runner.schedule_test(TestType.KEYGEN)
