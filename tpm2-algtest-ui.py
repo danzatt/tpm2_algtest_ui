@@ -24,9 +24,9 @@ from tempfile import mkdtemp
 from yui import YUI
 from yui import YEvent
 
-IMAGE_TAG = 'tpm2-algtest-ui v1.2'
+IMAGE_TAG = 'tpm2-algtest-ui v1.3'
 RESULT_PATH = "/mnt/algtest"
-TCTI_SPEC = "device:/dev/tpm1"
+TCTI_SPEC = "device:/dev/tpm0"
 DEPOSITORY_UCO = 469348
 INFO_MESSAGE = \
 """<b>Experiment</b>: Analysis of Trusted Platform Modules
