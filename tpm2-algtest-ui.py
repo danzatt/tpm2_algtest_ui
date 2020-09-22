@@ -760,6 +760,7 @@ class AlgtestTestRunner(Thread):
         if version < [4, 0, 0]:
             run_command.append("-c")
 
+        result_code = 0
         categories = ['algorithms', 'commands', 'properties-fixed', 'properties-variable', 'ecc-curves', 'handles-persistent']
         for category in categories:
             self.tick()
@@ -770,9 +771,10 @@ class AlgtestTestRunner(Thread):
             with open(os.path.join(self.detail_dir, f'Quicktest_{category}.txt'), 'w') as outfile:
                 outfile.write(result.stdout.decode("ascii"))
             if result.returncode != 0:
-                return result.returncode
+                self.append_text("Command '" + " ".join(run_command + [category]) + "' failed with return code " + str(result.returncode))
+                result_code = result.returncode
         self.tick()
-        return 0
+        return result_code
 
     def schedule_test(self, test):
         self.tests_to_run.append(test)
