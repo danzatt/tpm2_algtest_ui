@@ -24,7 +24,8 @@ from tempfile import mkdtemp
 from yui import YUI
 from yui import YEvent
 
-IMAGE_TAG = 'tpm2-algtest-ui v1.3'
+VERSION = ' v.0.1.1'
+IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
 TCTI_SPEC = "device:/dev/tpm0"
 DEPOSITORY_UCO = 469348
@@ -215,7 +216,7 @@ class TestResultCollector:
         self.tick()
         manufacturer, vendor_str, fw = self.get_tpm_id()
         self.tick()
-        system_manufacturer, product_name, system_version = self.get_system_id()
+        system_manufacturer, product_name, system_version, bios_version = self.get_system_id()
         if self.email is not None:
             file.write(f'Tested and provided by;{self.email}\n')
         file.write(f'Execution date/time;{datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")}\n')
@@ -226,12 +227,14 @@ class TestResultCollector:
         file.write(f'TPM devices;{";".join(glob.glob("/dev/tpm*"))}\n')
         file.write(f'Device manufacturer;{system_manufacturer}\n')
         file.write(f'Device name;{product_name}\n')
-        file.write(f'Device version;{system_version}\n\n')
+        file.write(f'Device version;{system_version}\n')
+        file.write(f'BIOS version;{bios_version}\n\n')
 
     def get_system_id(self):
         manufacturer = None
         product_name = None
         version = None
+        bios_version = None
 
         system_info = os.path.join(self.detail_dir, 'dmidecode_system_info.txt')
         if os.path.isfile(system_info):
@@ -251,7 +254,11 @@ class TestResultCollector:
                     version = output[3].split(":")[1][1:]
                 except:
                     pass
-        return manufacturer, product_name, version
+        system_info = os.path.join(self.detail_dir, 'dmidecode_bios_version.txt')
+        if os.path.isfile(system_info):
+            with open(system_info, 'r') as dmidecode_bios_file:
+                bios_version = dmidecode_bios_file.readline()[:-1]
+        return manufacturer, product_name, version, bios_version
 
     def get_tpm_id(self):
         def get_val(line):
@@ -726,13 +733,15 @@ class AlgtestTestRunner(Thread):
     def run_quicktest(self):
         os.makedirs(self.detail_dir, exist_ok=True)
 
-        result = subprocess.run("sudo -n dmidecode | grep -A3 '^System Information'", stderr=subprocess.STDOUT, stdout=subprocess.PIPE, shell=True)
+        result = subprocess.run("sudo -n dmidecode -s bios-version", stderr=subprocess.STDOUT, stdout=subprocess.PIPE, shell=True)
+        with open(os.path.join(self.detail_dir, 'dmidecode_bios_version.txt'), 'w') as outfile:
+            outfile.write(result.stdout.decode("ascii"))
 
+        result = subprocess.run("sudo -n dmidecode | grep -A3 '^System Information'", stderr=subprocess.STDOUT, stdout=subprocess.PIPE, shell=True)
         with open(os.path.join(self.detail_dir, 'dmidecode_system_info.txt'), 'w') as outfile:
             outfile.write(result.stdout.decode("ascii"))
 
         result = subprocess.run(['tpm2_pcrread', '-T', TCTI_SPEC], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
-
         with open(os.path.join(self.detail_dir, 'Quicktest_pcrread.txt'), 'w') as outfile:
             outfile.write(result.stdout.decode("ascii"))
 
@@ -880,8 +889,8 @@ class TPM2AlgtestUI:
         self.simple_mode = False
 
         YUI.application().setApplicationIcon("/usr/share/icons/hicolor/256x256/apps/tpm2-algtest.png")
-        YUI.application().setProductName("TPM2 algorithms test")
-        YUI.application().setApplicationTitle("TPM2 algorithms test")
+        YUI.application().setProductName("TPM2 algorithms test " + VERSION)
+        YUI.application().setApplicationTitle("TPM2 algorithms test " + VERSION)
         self.dialog = YUI.widgetFactory().createMainDialog()
 
         self.vbox = YUI.widgetFactory().createVBox(self.dialog)
@@ -941,8 +950,8 @@ class TPM2AlgtestUI:
         self.simple_mode = True
 
         YUI.application().setApplicationIcon("/usr/share/icons/hicolor/256x256/apps/tpm2-algtest.png")
-        YUI.application().setProductName("TPM2 algorithms test")
-        YUI.application().setApplicationTitle("TPM2 algorithms test")
+        YUI.application().setProductName("TPM2 algorithms test " + VERSION)
+        YUI.application().setApplicationTitle("TPM2 algorithms test " + VERSION)
         self.dialog = YUI.widgetFactory().createMainDialog()
 
         self.vbox = YUI.widgetFactory().createVBox(self.dialog)
