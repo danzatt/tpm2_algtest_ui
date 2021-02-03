@@ -877,6 +877,7 @@ class TPM2AlgtestUI:
         self.advanced_button = None
         self.shutdown_checkbox = None
         # self.email_field = None
+        self.exit_button = None
 
         self.popup_info = None
         self.popup_info_hide_button = None
@@ -942,6 +943,8 @@ class TPM2AlgtestUI:
         self.info_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Info")
         self.stop_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Stop")
 
+        if  YUI.application().isTextMode():
+            self.exit_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Exit")
         self.shutdown_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Shutdown PC")
         self.simple_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Simple mode")
 
@@ -981,6 +984,8 @@ class TPM2AlgtestUI:
         self.info_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Info")
         self.stop_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Stop")
 
+        if  YUI.application().isTextMode():
+            self.exit_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Exit")
         self.shutdown_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Shutdown PC")
         self.advanced_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Advanced mode")
 
@@ -1007,7 +1012,8 @@ class TPM2AlgtestUI:
 
     def popup_info_show(self):
         self.popup_info = YUI.widgetFactory().createPopupDialog()
-        self.popup_info.setSize(550, 600)
+        if not YUI.application().isTextMode():
+            self.popup_info.setSize(550, 600)
 
         popup_vbox = YUI.widgetFactory().createVBox(self.popup_info)
 
@@ -1040,10 +1046,7 @@ class TPM2AlgtestUI:
                         self.popup_ask_upload()
                         self.store_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Store or upload results")
 
-            if ev.eventType() == YEvent.CancelEvent:
-                if self.algtest_runner.is_alive():
-                    self.algtest_runner.terminate()
-
+            if ev.eventType() == YEvent.CancelEvent or (self.exit_button is not None and ev.widget() == self.exit_button):
                 if self.popup is not None:
                     self.popup.destroy()
                     self.popup = None
@@ -1053,6 +1056,10 @@ class TPM2AlgtestUI:
                     self.popup_info.destroy()
                     self.popup_info = None
                     continue
+
+                if self.algtest_runner.is_alive():
+                    self.algtest_runner.terminate()
+
 
                 self.dialog.destroy()
                 self.dialog = None
