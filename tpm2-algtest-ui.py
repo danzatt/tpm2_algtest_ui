@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 
-# Copyright (C) 2020 Daniel Zatovic
+# Copyright (C) 2022 Daniel Zatovic
 # parts Copyright (C) 2019 Simon Struk
+# parts Copyright (C) 2022 Antonin Dufka
 
 from collections import deque
 from enum import Enum, auto
@@ -24,7 +25,7 @@ from tempfile import mkdtemp
 from yui import YUI
 from yui import YEvent
 
-VERSION = ' v.0.1.2'
+VERSION = ' v.0.2'
 IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
 TCTI_SPEC = "device:/dev/tpm0"
@@ -456,6 +457,8 @@ class AlgtestState(Enum):
 class TestType(Enum):
     PERFORMANCE = auto()
     KEYGEN = auto()
+    NONCE = auto()
+    RNG = auto()
 
 
 class StoreType(Enum):
@@ -516,16 +519,20 @@ class AlgtestTestRunner(Thread):
         self.append_text(f'TPM vendor string: "{vendor_str}"')
 
         while self.tests_to_run and not self.get_shall_stop():
-            test = self.tests_to_run.popleft()
+            test, duration = self.tests_to_run.popleft()
             os.makedirs(self.detail_dir, exist_ok=True)
 
             self.append_text(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
             self.set_status(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
             self.tick()
             if test == TestType.PERFORMANCE:
-                self.algtest_proc = subprocess.Popen(self.cmd + ["perf"], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
+                self.algtest_proc = subprocess.Popen(self.cmd + ["perf", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
             elif test == TestType.KEYGEN:
-                self.algtest_proc = subprocess.Popen(self.cmd + ["keygen"], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
+                self.algtest_proc = subprocess.Popen(self.cmd + ["keygen", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
+            elif test == TestType.NONCE:
+                self.algtest_proc = subprocess.Popen(self.cmd + ["nonce", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
+            elif test == TestType.RNG:
+                self.algtest_proc = subprocess.Popen(self.cmd + ["rng", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
 
             fd = self.algtest_proc.stdout.fileno()
             fl = fcntl.fcntl(fd, fcntl.F_GETFL)
@@ -567,6 +574,12 @@ class AlgtestTestRunner(Thread):
                 self.set_status("Computing RSA private keys...")
                 self.tick()
                 self.keygen_post()
+
+            if test == TestType.NONCE and not self.get_shall_stop():
+                self.append_text("Computing ECC nonces...")
+                self.set_status("Computing ECC nonces...")
+                self.tick()
+                self.nonce_post()
 
             current_test += 1
 
@@ -727,8 +740,12 @@ class AlgtestTestRunner(Thread):
             return self.shall_stop
 
     def keygen_post(self):
-        for filename in glob.glob(os.path.join(self.detail_dir, 'Keygen_RSA_*_keys.csv')):
+        for filename in glob.glob(os.path.join(self.detail_dir, 'Keygen:RSA_*.csv')):
             self.compute_rsa_privates(filename)
+
+    def nonce_post(self):
+        for filename in glob.glob(os.path.join(self.detail_dir, 'Nonce:ECC_*.csv')):
+            self.compute_nonce(filename)
 
     def run_quicktest(self):
         os.makedirs(self.detail_dir, exist_ok=True)
@@ -786,6 +803,60 @@ class AlgtestTestRunner(Thread):
 
         if self.algtest_proc is not None and self.algtest_proc.poll() is None:
             self.algtest_proc.terminate()
+
+    def compute_nonce(self, filename):
+        CURVE_ORDER = {
+            "P256": 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551,
+            "P384": 0xffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973,
+            "BN256": 0xfffffffffffcf0cd46e5f25eee71a49e0cdc65fb1299921af62d536cd10b500d
+        }
+
+        def extract_ecdsa_nonce(n, r, s, x, e):
+            # https://en.wikipedia.org/wiki/Elliptic_Curve_Digital_Signature_Algorithm
+            return (pow(s, -1, n) * (e + (r * x) % n) % n) % n
+
+        def extract_ecschnorr_nonce(n, r, s, x, e):
+            # https://trustedcomputinggroup.org/wp-content/uploads/TPM2.0-Library-Spec-v1.16-Errata_v1.5_09212016.pdf
+            return (s - (r * x) % n) % n
+
+        def extract_sm2_nonce(n, r, s, x, e):
+            # https://crypto.stackexchange.com/questions/9918/reasons-for-chinese-sm2-digital-signature-algorithm
+            return (s + (s * x) % n + (r * x) % n) % n
+
+        def compute_row(row):
+            try:
+                digest = int(row['digest'], 16)
+                curve = { 0x3: "P256", 0x4: "P384", 0x10: "BN256" }[int(row['curve'], 16)]
+                algorithm = { 0x18: "ECDSA", 0x1b: "SM2", 0x1c: "ECSCHNORR" }[int(row['algorithm'], 16)]
+                signature_r = int(row['signature_r'], 16)
+                signature_s = int(row['signature_s'], 16)
+                private_key = int(row['private_key'], 16)
+
+                row['nonce'] = hex({
+                    "ECDSA": extract_ecdsa_nonce,
+                    "ECSCHNORR": extract_ecschnorr_nonce,
+                    "SM2": extract_sm2_nonce
+                }[algorithm](CURVE_ORDER[curve], signature_r, signature_s, private_key, digest))[2:]
+
+            except Exception:
+                print(f"Cannot compute row {row['id']}")
+                return
+
+        rows = []
+        with open(filename) as infile:
+            reader = csv.DictReader(infile, delimiter=',')
+            for row in reader:
+                rows.append(row)
+
+        for row in rows:
+            compute_row(row)
+
+        with open(filename, 'w') as outfile:
+            writer = csv.DictWriter(
+                    outfile, delimiter=',', fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
 
     def compute_rsa_privates(self, filename):
         def extended_euclidean(a, b):
@@ -863,9 +934,10 @@ class TPM2AlgtestUI:
         self.vbox = None
         self.group = None
         self.type_box = None
-        self.both_button = None
         self.keygen_button = None
         self.perf_button = None
+        self.rng_button = None
+        self.nonce_button = None
         self.progress_bar = None
         self.busy_indicator = None
         self.text = None
@@ -900,18 +972,44 @@ class TPM2AlgtestUI:
         self.hbox = YUI.widgetFactory().createHBox(self.vbox)
         YUI.widgetFactory().createLabel(self.hbox, "Select the test type")
 
-        self.group = YUI.widgetFactory().createRadioButtonGroup(self.hbox)
-        self.type_box = YUI.widgetFactory().createHBox(self.group)
+        self.type_box = YUI.widgetFactory().createHBox(self.hbox)
 
-        self.keygen_button = YUI.widgetFactory().createRadioButton(self.type_box, "&keygen")
-        self.group.addRadioButton(self.keygen_button)
+        self.keygen_button = YUI.widgetFactory().createCheckBox(self.type_box, "&keygen")
+        self.keygen_button.setValue(True)
+        self.perf_button = YUI.widgetFactory().createCheckBox(self.type_box, "&performance")
+        self.perf_button.setValue(True)
+        self.rng_button = YUI.widgetFactory().createCheckBox(self.type_box, "&RNG")
+        self.rng_button.setValue(True)
+        self.nonce_button = YUI.widgetFactory().createCheckBox(self.type_box, "&nonce")
+        self.nonce_button.setValue(True)
 
-        self.perf_button = YUI.widgetFactory().createRadioButton(self.type_box, "&perf")
-        self.group.addRadioButton(self.perf_button)
+        self.hbox2 = YUI.widgetFactory().createHBox(self.vbox)
+        YUI.widgetFactory().createLabel(self.hbox2, "Select number of test repetitions: ")
 
-        self.both_button = YUI.widgetFactory().createRadioButton(self.type_box, "&both")
-        self.both_button.setValue(True)
-        self.group.addRadioButton(self.both_button)
+        self.group = YUI.widgetFactory().createRadioButtonGroup(self.hbox2)
+        self.duration_box = YUI.widgetFactory().createHBox(self.group)
+
+        self.duration_100_button = YUI.widgetFactory().createRadioButton(self.duration_box, "&100 (Default)")
+        self.duration_100_button.setValue(True)
+        self.group.addRadioButton(self.duration_100_button)
+
+        self.duration_200_button = YUI.widgetFactory().createRadioButton(self.duration_box, "&200")
+        self.group.addRadioButton(self.duration_200_button)
+
+        self.duration_300_button = YUI.widgetFactory().createRadioButton(self.duration_box, "&300")
+        self.group.addRadioButton(self.duration_300_button)
+
+        self.duration_400_button = YUI.widgetFactory().createRadioButton(self.duration_box, "&400")
+        self.group.addRadioButton(self.duration_400_button)
+
+        self.duration_500_button = YUI.widgetFactory().createRadioButton(self.duration_box, "&500")
+        self.group.addRadioButton(self.duration_500_button)
+
+        self.duration_1000_button = YUI.widgetFactory().createRadioButton(self.duration_box, "&1000")
+        self.group.addRadioButton(self.duration_1000_button)
+
+        self.duration_1500_button = YUI.widgetFactory().createRadioButton(self.duration_box, "&1500")
+        self.group.addRadioButton(self.duration_1500_button)
 
         # YUI.widgetFactory().createLabel(self.vbox,
         #   "The collected information does not contain any of your personal information.\n" \
@@ -1081,14 +1179,37 @@ class TPM2AlgtestUI:
                     # self.algtest_runner.set_mail(self.email_field.value())
 
                     if self.simple_mode:
-                            self.algtest_runner.schedule_test(TestType.KEYGEN)
-                            self.algtest_runner.schedule_test(TestType.PERFORMANCE)
+                            self.algtest_runner.schedule_test((TestType.KEYGEN, 100))
+                            self.algtest_runner.schedule_test((TestType.PERFORMANCE, 100))
+                            self.algtest_runner.schedule_test((TestType.NONCE, 100))
+                            self.algtest_runner.schedule_test((TestType.RNG, 100))
                     else:
-                        if self.both_button.value() or self.keygen_button.value():
-                            self.algtest_runner.schedule_test(TestType.KEYGEN)
+                        duration = 100
 
-                        if self.both_button.value() or self.perf_button.value():
-                            self.algtest_runner.schedule_test(TestType.PERFORMANCE)
+                        if self.duration_200_button.value():
+                            duration = 200
+                        elif self.duration_300_button.value():
+                            duration = 300
+                        elif self.duration_400_button.value():
+                            duration = 400
+                        elif self.duration_500_button.value():
+                            duration = 500
+                        elif self.duration_1000_button.value():
+                            duration = 1000
+                        elif self.duration_1500_button.value():
+                            duration = 1500
+
+                        if self.keygen_button.isChecked():
+                            self.algtest_runner.schedule_test((TestType.KEYGEN, duration))
+
+                        if self.perf_button.isChecked():
+                            self.algtest_runner.schedule_test((TestType.PERFORMANCE, duration))
+
+                        if self.nonce_button.isChecked():
+                            self.algtest_runner.schedule_test((TestType.NONCE, duration))
+
+                        if self.rng_button.isChecked():
+                            self.algtest_runner.schedule_test((TestType.RNG, duration))
 
                     self.algtest_runner.start()
                 elif ev.widget() == self.popup_cancel:
