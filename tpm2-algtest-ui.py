@@ -21,11 +21,12 @@ import zipfile
 from shutil import copyfile
 from uuid import uuid4
 from tempfile import mkdtemp
+import urllib.request
 
 from yui import YUI
 from yui import YEvent
 
-VERSION = ' v.0.2'
+VERSION = ' v.0.2.1'
 IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
 TCTI_SPEC = "device:/dev/tpm0"
@@ -46,7 +47,7 @@ INFO_MESSAGE = \
 <b>Goal of the research:</b>
 The goal of the research is to get a better understanding of the Trusted
 Platform Modules ecosystem. Such information is vital for the designers and
-developers using this technology, allowing then to answer questions like: What
+developers using this technology, allowing them to answer questions like: What
 fraction of devices has TPM chip? Which cryptographic algorithms are widely
 supported? What is the overhead of computing a digital signature?
 
@@ -146,6 +147,30 @@ Data retention:
   collected together with the research findings.
 
 Thank you a lot for cooperation!"""
+
+POPUP_TEXT = """
+The test finished successfully and the anonymised results were stored on the
+USB. Results and instructions how to upload them will be available on the
+ALGTEST_RES volume after plugging the USB into your system.
+
+Do you want to upload the data now?
+""".strip()
+
+POPUP_TEXT_ONLINE = """
+You seem to be connected to the internet. Please upload the data to the
+research database now.  Alternatively, you can reboot and upload the archive
+from the USB later.
+"""
+
+POPUP_TEXT_OFFLINE = """
+You seem to be offline. Please configure the network and upload the data to the
+research database now.  Alternatively, you can reboot and upload the archive
+from the USB later.
+"""
+
+SHORT_TEST_ITERATIONS = 100
+EXTENSIVE_TEST_ITERATIONS = 100000
+
 
 
 class ISUploader:
@@ -485,6 +510,7 @@ class AlgtestTestRunner(Thread):
         self.tests_to_run = deque()
         self.algtest_proc = None
         self.shall_stop = False
+        self.internet_connected = None
 
         self.test_finished = False
         self.email = None
@@ -524,6 +550,12 @@ class AlgtestTestRunner(Thread):
 
             self.append_text(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
             self.set_status(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
+            print(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
+
+            absolute_percentage = int(((current_test - 1) / total_tests) * 100)
+            absolute_percentage = min(absolute_percentage + 1, 100)  # at this point test is started, so we make the progress at least 1 percent
+            self.set_percentage(absolute_percentage)
+
             self.tick()
             if test == TestType.PERFORMANCE:
                 self.algtest_proc = subprocess.Popen(self.cmd + ["perf", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
@@ -583,22 +615,36 @@ class AlgtestTestRunner(Thread):
 
             current_test += 1
 
-        r = None
+        self.append_text("Testing internet connection...")
+        self.set_status("Testing internet connection...")
+        self.test_connection()
+        self.tick()
+        self.append_text("Compressing results...")
+        self.set_status("Compressing results...")
+        self.zip_results()
+        self.tick()
+
         if self.get_shall_stop():
             self.append_text("Stop requested.")
             self.set_status("Stop requested.")
-            r = 1
             self.set_state(AlgtestState.STOPPED)
+            self.tick(False)
+            return 1
         else:
-            r = 0
             self.set_state(AlgtestState.SUCCESS)
             self.append_text("All tests finished successfully.")
             self.set_status("All tests finished successfully.")
+            self.tick(False)
+            return 0
 
-        self.zip_results()
-
-        self.tick(False)
-        return r
+    def test_connection(self):
+        try:
+            urllib.request.urlopen('http://google.com', timeout=2) #Python 3.x
+            with self.info_lock:
+                self.internet_connected = True
+        except:
+            with self.info_lock:
+                self.internet_connected = False
 
     def zip_results(self):
         self.append_text("Please wait, collecting results...")
@@ -618,22 +664,23 @@ class AlgtestTestRunner(Thread):
         result_zip = self.out_dir + '.zip'
         zip_filename = os.path.basename(result_zip)
 
-        if not os.path.isdir(RESULT_PATH):
-            if os.system("mkdir -p " + RESULT_PATH + " && mount /dev/disk/by-label/ALGTEST_RES " + RESULT_PATH) == 0:
-                self.append_text("Successfully mounted ALGTEST_RES partition")
+        if store_type == StoreType.STORE_USB:
+            if not os.path.isdir(RESULT_PATH):
+                if os.system("mkdir -p " + RESULT_PATH + " && mount /dev/disk/by-label/ALGTEST_RES " + RESULT_PATH) == 0:
+                    self.append_text("Successfully mounted ALGTEST_RES partition")
 
-        if os.path.isdir(RESULT_PATH):
-            try:
-                copyfile(result_zip, os.path.join(RESULT_PATH, zip_filename))
-                self.append_text("Copied to USB. File name: " + zip_filename)
-                with open(os.path.join(RESULT_PATH, "README_AND_HOW_TO_UPLOAD.txt"), "w") as readme_file:
-                    readme_file.write(INFO_MESSAGE_PLAIN)
-                os.sync()
-            except:
-                self.append_text("Failed to copy to USB.")
-                self.set_status("Failed to copy to USB.")
-        else:
-            self.append_text("ALGTEST_RES partition is not mounted. Can not store on USB.")
+            if os.path.isdir(RESULT_PATH):
+                try:
+                    copyfile(result_zip, os.path.join(RESULT_PATH, zip_filename))
+                    self.append_text("Copied to USB. File name: " + zip_filename)
+                    with open(os.path.join(RESULT_PATH, "README_AND_HOW_TO_UPLOAD.txt"), "w") as readme_file:
+                        readme_file.write(INFO_MESSAGE_PLAIN)
+                    os.sync()
+                except:
+                    self.append_text("Failed to copy to USB.")
+                    self.set_status("Failed to copy to USB.")
+            else:
+                self.append_text("ALGTEST_RES partition is not mounted. Can not store on USB.")
 
         if store_type == StoreType.UPLOAD:
             self.append_text("Uploading results...")
@@ -674,22 +721,32 @@ class AlgtestTestRunner(Thread):
 
         while self.algtest_proc.poll() is None and not self.get_shall_stop():
             self.tick()
-            line = self.algtest_proc.stdout.readline().decode("ascii")
-            while line != "" and not self.get_shall_stop():
-                if 2 < len(line) <= 5 and line[-2] == "%":
-                    current_test_percentage = int(line[:-2]) / 100
-                    absolute_percentage = ((current_test - 1) / total_tests) + (1/total_tests) * current_test_percentage
-                    absolute_percentage = int(absolute_percentage * 100)
-                    absolute_percentage = min(absolute_percentage + 1, 100)  # at this point test is started, so we make the progress at least 1 percent
-                    self.set_percentage(absolute_percentage)
-                else:
-                    self.append_text(line[:-1])
-                line = self.algtest_proc.stdout.readline().decode("ascii")
+
+            lines = []
+            input_data = self.algtest_proc.stdout.read()
+            if input_data is not None:
+                lines = input_data.decode("ascii").splitlines()
+
+            while lines and not self.get_shall_stop():
+                for line in lines:
+                    if 2 <= len(line) <= 4 and line[-1] == "%":
+                        current_test_percentage = int(line[:-1]) / 100
+                        absolute_percentage = ((current_test - 1) / total_tests) + (1/total_tests) * current_test_percentage
+                        absolute_percentage = int(absolute_percentage * 100)
+                        absolute_percentage = min(absolute_percentage + 1, 100)  # at this point test is started, so we make the progress at least 1 percent
+                        self.set_percentage(absolute_percentage)
+                    else:
+                        self.append_text(line)
+                input_data = self.algtest_proc.stdout.read()
+                lines = []
+                if input_data is not None:
+                    lines = input_data.decode("ascii").splitlines()
 
     def append_text(self, text):
-        with self.info_lock:
-            self.text.append(datetime.datetime.now().strftime("%H:%M:%S") + " " + text)
-            self.info_changed = True
+        for line in text.splitlines():
+            with self.info_lock:
+                self.text.append(datetime.datetime.now().strftime("%H:%M:%S") + " " + line)
+                self.info_changed = True
 
     def get_text(self, lines=400):
         with self.info_lock:
@@ -699,6 +756,10 @@ class AlgtestTestRunner(Thread):
         with self.info_lock:
             self.state = state
             self.info_changed = True
+
+    def get_internet_connected(self):
+        with self.info_lock:
+            return self.internet_connected
 
     def get_state(self):
         with self.info_lock:
@@ -745,6 +806,7 @@ class AlgtestTestRunner(Thread):
 
     def nonce_post(self):
         for filename in glob.glob(os.path.join(self.detail_dir, 'Nonce:ECC_*.csv')):
+            self.tick()
             self.compute_nonce(filename)
 
     def run_quicktest(self):
@@ -840,15 +902,19 @@ class AlgtestTestRunner(Thread):
 
             except Exception:
                 print(f"Cannot compute row {row['id']}")
+                self.append_text(f"Cannot compute row {row['id']}")
                 return
 
         rows = []
         with open(filename) as infile:
             reader = csv.DictReader(infile, delimiter=',')
             for row in reader:
+                self.tick()
                 rows.append(row)
 
-        for row in rows:
+        for i, row in enumerate(rows):
+            self.tick()
+            self.append_text(f"Computing RSA row {i} out of {len(rows)}")
             compute_row(row)
 
         with open(filename, 'w') as outfile:
@@ -856,6 +922,7 @@ class AlgtestTestRunner(Thread):
                     outfile, delimiter=',', fieldnames=list(rows[0].keys()))
             writer.writeheader()
             for row in rows:
+                self.tick()
                 writer.writerow(row)
 
     def compute_rsa_privates(self, filename):
@@ -901,12 +968,16 @@ class AlgtestTestRunner(Thread):
             row['d'] = '%X' % d
 
         rows = []
+
         with open(filename) as infile:
             reader = csv.DictReader(infile, delimiter=';')
             for row in reader:
+                self.tick()
                 rows.append(row)
 
-        for row in rows:
+        for i, row in enumerate(rows):
+            self.tick()
+            self.append_text(f"Computing RSA row {i} out of {len(rows)}")
             compute_row(row)
 
         with open(filename, 'w') as outfile:
@@ -914,6 +985,7 @@ class AlgtestTestRunner(Thread):
                     outfile, delimiter=';', fieldnames=list(rows[0].keys()))
             writer.writeheader()
             for row in rows:
+                self.tick()
                 writer.writerow(row)
 
 
@@ -934,15 +1006,12 @@ class TPM2AlgtestUI:
         self.vbox = None
         self.group = None
         self.type_box = None
-        self.keygen_button = None
-        self.perf_button = None
-        self.rng_button = None
-        self.nonce_button = None
         self.progress_bar = None
         self.busy_indicator = None
         self.text = None
         self.bottom_buttons = None
-        self.run_button = None
+        self.start_short_button = None
+        self.start_extensive_button = None
         self.stop_button = None
         self.store_button = None
         self.info_button = None
@@ -955,9 +1024,9 @@ class TPM2AlgtestUI:
         self.popup_info_hide_button = None
 
         self.popup = None
-        self.yesNoButtons = None
+        self.popup_buttons = None
         self.popup_upload = None
-        self.popup_usb = None
+        self.popup_configure = None
         self.popup_cancel = None
 
     def construct_advanced_ui(self):
@@ -973,15 +1042,6 @@ class TPM2AlgtestUI:
         YUI.widgetFactory().createLabel(self.hbox, "Select the test type")
 
         self.type_box = YUI.widgetFactory().createHBox(self.hbox)
-
-        self.keygen_button = YUI.widgetFactory().createCheckBox(self.type_box, "&keygen")
-        self.keygen_button.setValue(True)
-        self.perf_button = YUI.widgetFactory().createCheckBox(self.type_box, "&performance")
-        self.perf_button.setValue(True)
-        self.rng_button = YUI.widgetFactory().createCheckBox(self.type_box, "&RNG")
-        self.rng_button.setValue(True)
-        self.nonce_button = YUI.widgetFactory().createCheckBox(self.type_box, "&nonce")
-        self.nonce_button.setValue(True)
 
         self.hbox2 = YUI.widgetFactory().createHBox(self.vbox)
         YUI.widgetFactory().createLabel(self.hbox2, "Select number of test repetitions: ")
@@ -1035,9 +1095,10 @@ class TPM2AlgtestUI:
 
         self.bottom_buttons = YUI.widgetFactory().createHBox(self.vbox)
         start_highlight_box = YUI.widgetFactory().createHBox(self.bottom_buttons)
-        self.run_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start")
-        self.dialog.highlight(start_highlight_box)
-        self.dialog.setDefaultButton(self.run_button)
+        self.start_short_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start short test (~5h)")
+        self.start_extensive_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start extensive test (~50h)")
+        #self.dialog.highlight(start_highlight_box)
+        self.dialog.setDefaultButton(self.start_short_button)
         self.info_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Info")
         self.stop_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Stop")
 
@@ -1056,6 +1117,7 @@ class TPM2AlgtestUI:
         YUI.application().setProductName("TPM2 algorithms test " + VERSION)
         YUI.application().setApplicationTitle("TPM2 algorithms test " + VERSION)
         self.dialog = YUI.widgetFactory().createMainDialog()
+        self.dialog.setSize(1000, 800)
 
         self.vbox = YUI.widgetFactory().createVBox(self.dialog)
 
@@ -1069,41 +1131,45 @@ class TPM2AlgtestUI:
         self.progress_bar = YUI.widgetFactory().createProgressBar(self.vbox, "Test progress", 100)
         self.progress_bar.setValue(0)
 
-        self.shutdown_checkbox = YUI.widgetFactory().createCheckBox(self.vbox, "Shutdown when test finishes successfully")
+        self.shutdown_checkbox = YUI.widgetFactory().createCheckBox(self.vbox, "Shutdown automatically when test finishes successfully (results will be stored on the USB, YOU WILL NEED TO UPLOAD THEM LATER MANUALLY)")
 
-        self.text = YUI.widgetFactory().createRichText(self.vbox, "")
+        self.text = YUI.widgetFactory().createRichText(self.vbox, "", True)
         self.text.setAutoScrollDown(True)
 
         self.bottom_buttons = YUI.widgetFactory().createHBox(self.vbox)
         start_highlight_box = YUI.widgetFactory().createHBox(self.bottom_buttons)
-        self.run_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start")
-        self.dialog.highlight(start_highlight_box)
-        self.dialog.setDefaultButton(self.run_button)
+
+        self.start_short_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start short test (~5h)")
+        self.start_extensive_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start extensive test (~50h)")
+
+        self.dialog.setDefaultButton(self.start_short_button)
         self.info_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Info")
         self.stop_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Stop")
 
         if  YUI.application().isTextMode():
             self.exit_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Exit")
         self.shutdown_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Shutdown PC")
-        self.advanced_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Advanced mode")
 
         self.dialog.open()
         self.dialog.activate()
 
     def popup_ask_upload(self):
+        if self.algtest_runner.get_internet_connected():
+            popup_text = POPUP_TEXT + "\n" + POPUP_TEXT_ONLINE
+        else:
+            popup_text = POPUP_TEXT + "\n" + POPUP_TEXT_OFFLINE
+
         self.popup = YUI.widgetFactory().createPopupDialog()
-
         popup_vbox = YUI.widgetFactory().createVBox(self.popup)
-        YUI.widgetFactory().createLabel(popup_vbox, "Do you want to upload the anonymised "\
-            "results or just store on the USB?\nResults will be available after plugging "\
-            "the live USB on ALGTEST_RESULTS volume.\nPlease, connect to a network before choosing to upload.\n")
-        self.yesNoButtons = YUI.widgetFactory().createHBox(popup_vbox)
+        YUI.widgetFactory().createLabel(popup_vbox, popup_text)
+        self.popup_buttons = YUI.widgetFactory().createHBox(popup_vbox)
 
-        self.yesNoButtons = YUI.widgetFactory().createHBox(popup_vbox)
-        self.popup_usb = YUI.widgetFactory().createPushButton(self.yesNoButtons, "&Just store on USB")
-        self.popup_upload = YUI.widgetFactory().createPushButton(self.yesNoButtons, "&Upload and store")
-        self.popup_cancel = YUI.widgetFactory().createPushButton(self.yesNoButtons, "&Cancel")
-        self.popup.setDefaultButton(self.popup_usb)
+        self.popup_buttons = YUI.widgetFactory().createHBox(popup_vbox)
+        if not self.algtest_runner.get_internet_connected():
+            self.popup_configure = YUI.widgetFactory().createPushButton(self.popup_buttons, "&Configure network")
+        self.popup_upload = YUI.widgetFactory().createPushButton(self.popup_buttons, "&Upload results")
+
+        self.popup_cancel = YUI.widgetFactory().createPushButton(self.popup_buttons, "&Cancel")
 
         self.popup.open()
         self.popup.activate()
@@ -1134,15 +1200,14 @@ class TPM2AlgtestUI:
             ev = self.dialog.topmostDialog().waitForEvent(100)
 
             if self.algtest_runner.is_finished() and self.dialog.topmostDialog() != self.popup and not self.result_stored:
-                if self.simple_mode:
-                    self.algtest_runner.store_results(StoreType.STORE_USB)
-                    self.result_stored = True
-                    if self.shutdown_checkbox.isChecked() and self.algtest_runner.get_state() == AlgtestState.SUCCESS:
-                        os.system("shutdown -h now")
-                else:
-                    if self.store_button is None:
-                        self.popup_ask_upload()
-                        self.store_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Store or upload results")
+                self.algtest_runner.store_results(StoreType.STORE_USB)
+                self.result_stored = True
+                if self.shutdown_checkbox.isChecked() and self.algtest_runner.get_state() == AlgtestState.SUCCESS:
+                    self.algtest_runner.store_results(StoreType.UPLOAD)
+                    os.system("shutdown -h now")
+                if self.store_button is None:
+                    self.popup_ask_upload()
+                    self.store_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Upload results")
 
             if ev.eventType() == YEvent.CancelEvent or (self.exit_button is not None and ev.widget() == self.exit_button):
                 if self.popup is not None:
@@ -1164,7 +1229,7 @@ class TPM2AlgtestUI:
             elif ev.eventType() == YEvent.WidgetEvent:
                 if ev.widget() == self.stop_button:
                     self.algtest_runner.terminate()
-                elif ev.widget() == self.run_button:
+                elif ev.widget() in [self.start_short_button, self.start_extensive_button]:
                     if self.store_button is not None:
                         self.store_button.parent().removeChild(self.store_button)
                         self.store_button = None
@@ -1178,51 +1243,26 @@ class TPM2AlgtestUI:
                     self.algtest_runner = AlgtestTestRunner(self.out_dir, lambda alive: self.busy_indicator.setAlive(alive))
                     # self.algtest_runner.set_mail(self.email_field.value())
 
-                    if self.simple_mode:
-                            self.algtest_runner.schedule_test((TestType.KEYGEN, 100))
-                            self.algtest_runner.schedule_test((TestType.PERFORMANCE, 100))
-                            self.algtest_runner.schedule_test((TestType.NONCE, 100))
-                            self.algtest_runner.schedule_test((TestType.RNG, 100))
-                    else:
-                        duration = 100
+                    if ev.widget() == self.start_short_button:
+                        duration = SHORT_TEST_ITERATIONS
+                    elif ev.widget() == self.start_extensive_button:
+                        duration = EXTENSIVE_TEST_ITERATIONS
 
-                        if self.duration_200_button.value():
-                            duration = 200
-                        elif self.duration_300_button.value():
-                            duration = 300
-                        elif self.duration_400_button.value():
-                            duration = 400
-                        elif self.duration_500_button.value():
-                            duration = 500
-                        elif self.duration_1000_button.value():
-                            duration = 1000
-                        elif self.duration_1500_button.value():
-                            duration = 1500
-
-                        if self.keygen_button.isChecked():
-                            self.algtest_runner.schedule_test((TestType.KEYGEN, duration))
-
-                        if self.perf_button.isChecked():
-                            self.algtest_runner.schedule_test((TestType.PERFORMANCE, duration))
-
-                        if self.nonce_button.isChecked():
-                            self.algtest_runner.schedule_test((TestType.NONCE, duration))
-
-                        if self.rng_button.isChecked():
-                            self.algtest_runner.schedule_test((TestType.RNG, duration))
+                    self.algtest_runner.schedule_test((TestType.NONCE, duration))
+                    self.algtest_runner.schedule_test((TestType.RNG, 525000))
+                    self.algtest_runner.schedule_test((TestType.PERFORMANCE, SHORT_TEST_ITERATIONS))
+                    self.algtest_runner.schedule_test((TestType.KEYGEN, duration))
 
                     self.algtest_runner.start()
                 elif ev.widget() == self.popup_cancel:
-                    self.popup.destroy()
-                    self.popup = None
-                elif ev.widget() == self.popup_usb:
-                    self.algtest_runner.store_results(StoreType.STORE_USB)
                     self.popup.destroy()
                     self.popup = None
                 elif ev.widget() == self.popup_upload:
                     self.algtest_runner.store_results(StoreType.UPLOAD)
                     self.popup.destroy()
                     self.popup = None
+                elif ev.widget() == self.popup_configure:
+                    os.system("gnome-control-center wifi")
                 elif ev.widget() == self.store_button:
                     self.popup_ask_upload()
                 elif ev.widget() == self.shutdown_button:
@@ -1244,10 +1284,7 @@ class TPM2AlgtestUI:
             elif ev.eventType() == YEvent.TimeoutEvent:
                 if self.algtest_runner.get_info_changed():
                     self.progress_bar.setValue(self.algtest_runner.get_percentage())
-                    if self.simple_mode:
-                        self.text.setText(self.algtest_runner.get_statuses())
-                    else:
-                        self.text.setText(self.algtest_runner.get_text())
+                    self.text.setText(self.algtest_runner.get_text())
                     self.busy_indicator.setLabel(self.algtest_runner.get_status())
 
                     if self.algtest_runner.get_state() == AlgtestState.NOT_RUNNING:
