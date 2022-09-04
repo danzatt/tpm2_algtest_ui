@@ -26,7 +26,7 @@ import urllib.request
 from yui import YUI
 from yui import YEvent
 
-VERSION = ' v.0.3.2'
+VERSION = ' v.0.3.3'
 IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
 TCTI_SPEC = "device:/dev/tpm0"
