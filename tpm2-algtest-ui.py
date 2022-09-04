@@ -26,7 +26,7 @@ import urllib.request
 from yui import YUI
 from yui import YEvent
 
-VERSION = ' v.0.2.1'
+VERSION = ' v.0.3.2'
 IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
 TCTI_SPEC = "device:/dev/tpm0"
@@ -168,7 +168,7 @@ research database now.  Alternatively, you can reboot and upload the archive
 from the USB later.
 """
 
-SHORT_TEST_ITERATIONS = 100
+SHORT_TEST_ITERATIONS = 1000
 EXTENSIVE_TEST_ITERATIONS = 100000
 
 
@@ -1262,7 +1262,7 @@ class TPM2AlgtestUI:
                     self.popup.destroy()
                     self.popup = None
                 elif ev.widget() == self.popup_configure:
-                    os.system("gnome-control-center wifi")
+                    os.system("gnome-control-center wifi&")
                 elif ev.widget() == self.store_button:
                     self.popup_ask_upload()
                 elif ev.widget() == self.shutdown_button:
