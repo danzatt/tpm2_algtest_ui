@@ -17,6 +17,8 @@ import requests
 import json
 import datetime
 import zipfile
+import hashlib
+import math
 
 from shutil import copyfile
 from uuid import uuid4
@@ -26,7 +28,7 @@ import urllib.request
 from yui import YUI
 from yui import YEvent
 
-VERSION = ' v.0.3.3'
+VERSION = ' v.0.3.4'
 IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
 TCTI_SPEC = "device:/dev/tpm0"
@@ -288,55 +290,35 @@ class TestResultCollector:
 
     def get_tpm_id(self):
         def get_val(line):
-            return line[line.find('0x') + 2:-1]
+            pos = line.find('0x')
+            if pos == -1:
+                return None
+            val = line[line.find('0x') + 2:-1]
+            return "0" * (8 - len(val)) + val
 
         manufacturer = ''
         vendor_str = ''
         fw = ''
         qt_properties = os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt')
         if os.path.isfile(qt_properties):
-            with open(qt_properties, 'r') as properties_file:
-                read_vendor_str = False
-                read_manufacturer_str = False
-                read_fw1_str = False
-                read_fw2_str = False
+            with open(os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt'), 'r') as properties_file:
+                lines = properties_file.readlines()
+                for line in lines:
+                    if "ERROR" in line:
+                        return "", "", ""
                 fw1 = ''
                 fw2 = ''
-                for line in properties_file:
-                    if read_vendor_str:
-                        val = get_val(line)
-                        if len(val) % 2 != 0:
-                            val = "0" + val
-
-                        vendor_str += bytearray.fromhex(val).decode()
-                        read_vendor_str = False
-                    elif read_manufacturer_str:
-                        val = get_val(line)
-                        if len(val) % 2 != 0:
-                            val = "0" + val
-
+                for idx, line in enumerate(lines):
+                    val = get_val(lines[idx]) or get_val(lines[idx + 1])
+                    if line.startswith('TPM2_PT_MANUFACTURER'):
                         manufacturer = bytearray.fromhex(val).decode()
-                        read_manufacturer_str = False
-                    elif line.startswith('TPM2_PT_MANUFACTURER'):
-                        read_manufacturer_str = True
                     elif line.startswith('TPM2_PT_FIRMWARE_VERSION_1'):
-                        read_fw1_str = True
-                    elif read_fw1_str:
-                        fw1 = line[line.find('0x') + 2:-1]
-                        read_fw1_str = False
+                        fw1 = val
                     elif line.startswith('TPM2_PT_FIRMWARE_VERSION_2'):
-                        read_fw2_str = True
-                    elif read_fw2_str:
-                        fw2 = line[line.find('0x') + 2:-1]
-                        read_fw2_str = False
+                        fw2 = val
                     elif line.startswith('TPM2_PT_VENDOR_STRING_'):
-                        read_vendor_str = True
-                try:
-                    fw1 = "0" * (8 - len(fw1)) + fw1
-                    fw2 = "0" * (8 - len(fw2)) + fw2
-                    fw = str(int(fw1[0:4], 16)) + '.' + str(int(fw1[4:8], 16)) + '.' + str(int(fw2[0:4], 16)) + '.' + str(int(fw2[4:8], 16))
-                except:
-                    fw = ""
+                        vendor_str += bytearray.fromhex(val).decode()
+                fw = str(int(fw1[0:4], 16)) + '.' + str(int(fw1[4:8], 16)) + '.' + str(int(fw2[0:4], 16)) + '.' + str(int(fw2[4:8], 16))
 
         manufacturer = manufacturer.replace('\0', '')
         vendor_str = vendor_str.replace('\0', '')
@@ -363,10 +345,9 @@ class TestResultCollector:
                 support_file.write('\nQuicktest_algorithms\n')
                 with open(qt_algorithms, 'r') as infile:
                     for line in infile:
-                        if line.startswith('TPMA_ALGORITHM'):
+                        if line.startswith('  value:'):
                             line = line[line.find('0x'):]
-                            line = line[:line.find(' ')]
-                            support_file.write(line + '\n')
+                            support_file.write(line)
 
             qt_commands = os.path.join(self.detail_dir, 'Quicktest_commands.txt')
             if os.path.isfile(qt_commands):
@@ -562,7 +543,7 @@ class AlgtestTestRunner(Thread):
             elif test == TestType.KEYGEN:
                 self.algtest_proc = subprocess.Popen(self.cmd + ["keygen", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
             elif test == TestType.NONCE:
-                self.algtest_proc = subprocess.Popen(self.cmd + ["nonce", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
+                self.algtest_proc = subprocess.Popen(self.cmd + ["cryptoops", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
             elif test == TestType.RNG:
                 self.algtest_proc = subprocess.Popen(self.cmd + ["rng", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
 
@@ -722,25 +703,18 @@ class AlgtestTestRunner(Thread):
         while self.algtest_proc.poll() is None and not self.get_shall_stop():
             self.tick()
 
-            lines = []
-            input_data = self.algtest_proc.stdout.read()
-            if input_data is not None:
-                lines = input_data.decode("ascii").splitlines()
+            line = self.algtest_proc.stdout.readline().decode("ascii")
+            while line != "" and not self.get_shall_stop():
+                if 2 < len(line) <= 5 and line[-2] == "%":
+                    current_test_percentage = int(line[:-2]) / 100
+                    absolute_percentage = ((current_test - 1) / total_tests) + (1/total_tests) * current_test_percentage
+                    absolute_percentage = int(absolute_percentage * 100)
+                    absolute_percentage = min(absolute_percentage + 1, 100)  # at this point test is started, so we make the progress at least 1 percent
+                    self.set_percentage(absolute_percentage)
+                else:
+                    self.append_text(line[:-1])
+                line = self.algtest_proc.stdout.readline().decode("ascii")
 
-            while lines and not self.get_shall_stop():
-                for line in lines:
-                    if 2 <= len(line) <= 4 and line[-1] == "%":
-                        current_test_percentage = int(line[:-1]) / 100
-                        absolute_percentage = ((current_test - 1) / total_tests) + (1/total_tests) * current_test_percentage
-                        absolute_percentage = int(absolute_percentage * 100)
-                        absolute_percentage = min(absolute_percentage + 1, 100)  # at this point test is started, so we make the progress at least 1 percent
-                        self.set_percentage(absolute_percentage)
-                    else:
-                        self.append_text(line)
-                input_data = self.algtest_proc.stdout.read()
-                lines = []
-                if input_data is not None:
-                    lines = input_data.decode("ascii").splitlines()
 
     def append_text(self, text):
         for line in text.splitlines():
@@ -801,11 +775,14 @@ class AlgtestTestRunner(Thread):
             return self.shall_stop
 
     def keygen_post(self):
+        self.set_percentage(min(self.percentage, 95))
         for filename in glob.glob(os.path.join(self.detail_dir, 'Keygen:RSA_*.csv')):
+            self.tick()
             self.compute_rsa_privates(filename)
 
     def nonce_post(self):
-        for filename in glob.glob(os.path.join(self.detail_dir, 'Nonce:ECC_*.csv')):
+        self.set_percentage(min(self.percentage, 95))
+        for filename in glob.glob(os.path.join(self.detail_dir, 'Cryptoops_Sign:ECC_*.csv')):
             self.tick()
             self.compute_nonce(filename)
 
@@ -885,11 +862,19 @@ class AlgtestTestRunner(Thread):
             # https://crypto.stackexchange.com/questions/9918/reasons-for-chinese-sm2-digital-signature-algorithm
             return (s + (s * x) % n + (r * x) % n) % n
 
+        def extract_ecdaa_nonce(n, r, s, x, e):
+            # https://trustedcomputinggroup.org/wp-content/uploads/TCG_TPM2_r1p59_Part1_Architecture_pub.pdf
+            hasher = hashlib.sha256()
+            hasher.update(int.to_bytes(r, byteorder="big", length=math.ceil(math.log2(n))))
+            hasher.update(int.to_bytes(e, byteorder="big", length=math.ceil(math.log2(n))))
+            h = int.from_bytes(hasher.digest(), byteorder="big")
+            return (s - h * x) % n
+
         def compute_row(row):
             try:
                 digest = int(row['digest'], 16)
                 curve = { 0x3: "P256", 0x4: "P384", 0x10: "BN256" }[int(row['curve'], 16)]
-                algorithm = { 0x18: "ECDSA", 0x1b: "SM2", 0x1c: "ECSCHNORR" }[int(row['algorithm'], 16)]
+                algorithm = { 0x18: "ECDSA", 0x1a: "ECDAA", 0x1b: "SM2", 0x1c: "ECSCHNORR" }[int(row['algorithm'], 16)]
                 signature_r = int(row['signature_r'], 16)
                 signature_s = int(row['signature_s'], 16)
                 private_key = int(row['private_key'], 16)
@@ -897,13 +882,13 @@ class AlgtestTestRunner(Thread):
                 row['nonce'] = hex({
                     "ECDSA": extract_ecdsa_nonce,
                     "ECSCHNORR": extract_ecschnorr_nonce,
-                    "SM2": extract_sm2_nonce
+                    "SM2": extract_sm2_nonce,
+                    "ECDAA": extract_ecdaa_nonce
                 }[algorithm](CURVE_ORDER[curve], signature_r, signature_s, private_key, digest))[2:]
 
-            except Exception:
-                print(f"Cannot compute row {row['id']}")
-                self.append_text(f"Cannot compute row {row['id']}")
-                return
+            except:
+                return False
+            return True
 
         rows = []
         with open(filename) as infile:
@@ -912,10 +897,16 @@ class AlgtestTestRunner(Thread):
                 self.tick()
                 rows.append(row)
 
+        failed = 0
         for i, row in enumerate(rows):
+            if self.get_shall_stop():
+                return
             self.tick()
-            self.append_text(f"Computing RSA row {i} out of {len(rows)}")
-            compute_row(row)
+            self.append_text(f"Computing ECC row {i} out of {len(rows)}")
+            failed += 0 if compute_row(row) else 1
+
+        if failed > 0:
+            print(f"Computation of {failed} rows failed")
 
         with open(filename, 'w') as outfile:
             writer = csv.DictWriter(
@@ -925,7 +916,7 @@ class AlgtestTestRunner(Thread):
                 self.tick()
                 writer.writerow(row)
 
-    def compute_rsa_privates(self, filename):
+    def compute_rsa_privates(self, filename,sep=";"):
         def extended_euclidean(a, b):
             x0, x1, y0, y1 = 0, 1, 1, 0
             while a != 0:
@@ -951,10 +942,8 @@ class AlgtestTestRunner(Thread):
                 n = int(row['n'], 16)
                 e = int(row['e'], 16)
                 p = int(row['p'], 16)
-            except Exception:
-                print(f"Cannot compute row {row['id']}")
-                self.append_text(f"Cannot compute row {row['id']}")
-                return
+            except:
+                return False
             q = n // p
             totient = (p - 1) * (q - 1)
             _, d, _ = extended_euclidean(e, totient)
@@ -962,30 +951,33 @@ class AlgtestTestRunner(Thread):
 
             message = 12345678901234567890
             assert mod_exp(mod_exp(message, e, n), d, n) == message, \
-                f"something went wrong (row {row['id']})"
+                f"Something went wrong (row {row['id']})"
 
             row['q'] = '%X' % q
             row['d'] = '%X' % d
+            return True
 
         rows = []
-
         with open(filename) as infile:
-            reader = csv.DictReader(infile, delimiter=';')
+            reader = csv.DictReader(infile, delimiter=sep)
             for row in reader:
-                self.tick()
                 rows.append(row)
 
-        for i, row in enumerate(rows):
+        failed = 0
+        for row in rows:
+            if self.get_shall_stop():
+                return
+            failed += 0 if compute_row(row) else 1
             self.tick()
-            self.append_text(f"Computing RSA row {i} out of {len(rows)}")
-            compute_row(row)
+
+        if failed > 0:
+            self.append_text(f"Computation of {failed} rows failed")
 
         with open(filename, 'w') as outfile:
             writer = csv.DictWriter(
-                    outfile, delimiter=';', fieldnames=list(rows[0].keys()))
+                    outfile, delimiter=sep, fieldnames=list(rows[0].keys()))
             writer.writeheader()
             for row in rows:
-                self.tick()
                 writer.writerow(row)
 
 
@@ -1095,14 +1087,14 @@ class TPM2AlgtestUI:
 
         self.bottom_buttons = YUI.widgetFactory().createHBox(self.vbox)
         start_highlight_box = YUI.widgetFactory().createHBox(self.bottom_buttons)
-        self.start_short_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start short test (~5h)")
-        self.start_extensive_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start extensive test (~50h)")
+        self.start_short_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start basic test (<5h)")
+        self.start_extensive_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start extensive test")
         #self.dialog.highlight(start_highlight_box)
         self.dialog.setDefaultButton(self.start_short_button)
         self.info_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Info")
         self.stop_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Stop")
 
-        if  YUI.application().isTextMode():
+        if YUI.application().isTextMode():
             self.exit_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Exit")
         self.shutdown_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Shutdown PC")
         self.simple_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Simple mode")
@@ -1117,7 +1109,9 @@ class TPM2AlgtestUI:
         YUI.application().setProductName("TPM2 algorithms test " + VERSION)
         YUI.application().setApplicationTitle("TPM2 algorithms test " + VERSION)
         self.dialog = YUI.widgetFactory().createMainDialog()
-        self.dialog.setSize(1000, 800)
+
+        if not YUI.application().isTextMode():
+            self.dialog.setSize(1000, 800)
 
         self.vbox = YUI.widgetFactory().createVBox(self.dialog)
 
@@ -1139,8 +1133,8 @@ class TPM2AlgtestUI:
         self.bottom_buttons = YUI.widgetFactory().createHBox(self.vbox)
         start_highlight_box = YUI.widgetFactory().createHBox(self.bottom_buttons)
 
-        self.start_short_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start short test (~5h)")
-        self.start_extensive_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start extensive test (~50h)")
+        self.start_short_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start basic test (<5h)")
+        self.start_extensive_button = YUI.widgetFactory().createPushButton(start_highlight_box, "&Start extensive test")
 
         self.dialog.setDefaultButton(self.start_short_button)
         self.info_button = YUI.widgetFactory().createPushButton(self.bottom_buttons, "&Info")
@@ -1175,7 +1169,12 @@ class TPM2AlgtestUI:
         self.popup.activate()
 
     def popup_info_show(self):
+        if YUI.application().isTextMode():
+            self.text.setText(INFO_MESSAGE_PLAIN)
+            return
+
         self.popup_info = YUI.widgetFactory().createPopupDialog()
+        self.popup_info.setSize(70, 70)
         if not YUI.application().isTextMode():
             self.popup_info.setSize(550, 600)
 
@@ -1245,11 +1244,14 @@ class TPM2AlgtestUI:
 
                     if ev.widget() == self.start_short_button:
                         duration = SHORT_TEST_ITERATIONS
+                        rng_iterations = 4000
                     elif ev.widget() == self.start_extensive_button:
                         duration = EXTENSIVE_TEST_ITERATIONS
+                        # 14MB
+                        rng_iterations = (14 * 1024 * 1024 * 8) // 32
 
                     self.algtest_runner.schedule_test((TestType.NONCE, duration))
-                    self.algtest_runner.schedule_test((TestType.RNG, 525000))
+                    self.algtest_runner.schedule_test((TestType.RNG, rng_iterations))
                     self.algtest_runner.schedule_test((TestType.PERFORMANCE, SHORT_TEST_ITERATIONS))
                     self.algtest_runner.schedule_test((TestType.KEYGEN, duration))
 
@@ -1284,7 +1286,8 @@ class TPM2AlgtestUI:
             elif ev.eventType() == YEvent.TimeoutEvent:
                 if self.algtest_runner.get_info_changed():
                     self.progress_bar.setValue(self.algtest_runner.get_percentage())
-                    self.text.setText(self.algtest_runner.get_text())
+                    if self.algtest_runner.get_text():
+                        self.text.setText(self.algtest_runner.get_text())
                     self.busy_indicator.setLabel(self.algtest_runner.get_status())
 
                     if self.algtest_runner.get_state() == AlgtestState.NOT_RUNNING:
