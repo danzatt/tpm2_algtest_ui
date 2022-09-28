@@ -28,7 +28,7 @@ import urllib.request
 from yui import YUI
 from yui import YEvent
 
-VERSION = ' v.0.3.4'
+VERSION = ' v.0.3.5'
 IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
 TCTI_SPEC = "device:/dev/tpm0"
@@ -244,7 +244,6 @@ class TestResultCollector:
         self.tick()
         manufacturer, vendor_str, fw = self.get_tpm_id()
         self.tick()
-        system_manufacturer, product_name, system_version, bios_version = self.get_system_id()
         if self.email is not None:
             file.write(f'Tested and provided by;{self.email}\n')
         file.write(f'Execution date/time;{datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")}\n')
@@ -253,12 +252,20 @@ class TestResultCollector:
         file.write(f'Firmware version;{fw}\n')
         file.write(f'Image tag;{IMAGE_TAG}\n')
         file.write(f'TPM devices;{";".join(glob.glob("/dev/tpm*"))}\n')
-        file.write(f'Device manufacturer;{system_manufacturer}\n')
-        file.write(f'Device name;{product_name}\n')
-        file.write(f'Device version;{system_version}\n')
-        file.write(f'BIOS version;{bios_version}\n\n')
+
+        try:
+            system_manufacturer, product_name, system_version, bios_version, uname = self.get_system_id()
+            file.write(f'Device manufacturer;{system_manufacturer}\n')
+            file.write(f'Device name;{product_name}\n')
+            file.write(f'Device version;{system_version}\n')
+            file.write(f'BIOS version;{bios_version}\n\n')
+            file.write(f'System information;{uname}\n')
+        except:
+            pass
+        file.write("\n")
 
     def get_system_id(self):
+        uname = None
         manufacturer = None
         product_name = None
         version = None
@@ -286,7 +293,12 @@ class TestResultCollector:
         if os.path.isfile(system_info):
             with open(system_info, 'r') as dmidecode_bios_file:
                 bios_version = dmidecode_bios_file.readline()[:-1]
-        return manufacturer, product_name, version, bios_version
+
+        system_info = os.path.join(self.detail_dir, 'uname_system_info.txt')
+        if os.path.isfile(system_info):
+            with open(system_info, 'r') as uname_file:
+                uname = uname_file.readline()[:-1]
+        return manufacturer, product_name, version, bios_version, uname
 
     def get_tpm_id(self):
         def get_val(line):
@@ -792,9 +804,11 @@ class AlgtestTestRunner(Thread):
         result = subprocess.run("sudo -n dmidecode -s bios-version", stderr=subprocess.STDOUT, stdout=subprocess.PIPE, shell=True)
         with open(os.path.join(self.detail_dir, 'dmidecode_bios_version.txt'), 'w') as outfile:
             outfile.write(result.stdout.decode("ascii"))
-
         result = subprocess.run("sudo -n dmidecode | grep -A3 '^System Information'", stderr=subprocess.STDOUT, stdout=subprocess.PIPE, shell=True)
         with open(os.path.join(self.detail_dir, 'dmidecode_system_info.txt'), 'w') as outfile:
+            outfile.write(result.stdout.decode("ascii"))
+        result = subprocess.run("uname -a", stderr=subprocess.STDOUT, stdout=subprocess.PIPE, shell=True)
+        with open(os.path.join(self.detail_dir, 'uname_system_info.txt'), 'w') as outfile:
             outfile.write(result.stdout.decode("ascii"))
 
         result = subprocess.run(['tpm2_pcrread', '-T', TCTI_SPEC], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
