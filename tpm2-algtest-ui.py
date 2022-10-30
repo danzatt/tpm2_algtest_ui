@@ -28,7 +28,7 @@ import urllib.request
 from yui import YUI
 from yui import YEvent
 
-VERSION = ' v.0.3.5'
+VERSION = ' v.0.4'
 IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
 TCTI_SPEC = "device:/dev/tpm0"
@@ -65,10 +65,10 @@ the data collected later as an open research dataset.
     version-related information</li>
     <li>TPM metadata (TPM_PT_xxx properties like TPM_PT_REVISION,
     TPM_PT_MANUFACTURER or TPM_PT_PCR_COUNT - see file
-    Quicktest_properties-fixed.txt and Quicktest_properties-variable.txt for full
+    Capability_properties-fixed.txt and Capability_properties-variable.txt for full
     list)</li>
     <li>Algorithms and commands supported by TPM (TPMA_ALGORITHM and TPMA_CC
-    properties, see Quicktest_algorithms.txt and Quicktest_commands.txt for full
+    properties, see Capability_algorithms.txt and Capability_commands.txt for full
     list)</li>
     <li>Performance measurements for various cryptographic algorithms (see
     Perf_xxx.csv files)</li>
@@ -125,10 +125,10 @@ Data we collect:
 - TPM vendor, firmware version (e.g., Intel 401.1.0.0) and TPM version-related
   information
 - TPM metadata (TPM_PT_xxx properties like TPM_PT_REVISION, TPM_PT_MANUFACTURER
-  or TPM_PT_PCR_COUNT - see file Quicktest_properties-fixed.txt and
-  Quicktest_properties-variable.txt for full list)
+  or TPM_PT_PCR_COUNT - see file Capability_properties-fixed.txt and
+  Capability_properties-variable.txt for full list)
 - Algorithms and commands supported by TPM (TPMA_ALGORITHM and TPMA_CC
-  properties, see Quicktest_algorithms.txt and Quicktest_commands.txt for full
+  properties, see Capability_algorithms.txt and Capability_commands.txt for full
   list)
 - Performance measurements for various cryptographic algorithms (see
   Perf_xxx.csv files)
@@ -227,7 +227,7 @@ class TestResultCollector:
         os.makedirs(os.path.join(self.outdir, 'results'), exist_ok=True)
         with open(os.path.join(self.outdir, 'results', file_name), 'w') as support_file:
             self.write_header(support_file)
-            self.write_support_file(support_file)
+            self.write_results_file(support_file)
         self.tick()
 
         os.makedirs(os.path.join(self.outdir, 'performance'), exist_ok=True)
@@ -245,24 +245,23 @@ class TestResultCollector:
         manufacturer, vendor_str, fw = self.get_tpm_id()
         self.tick()
         if self.email is not None:
-            file.write(f'Tested and provided by;{self.email}\n')
-        file.write(f'Execution date/time;{datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")}\n')
-        file.write(f'Manufacturer;{manufacturer}\n')
-        file.write(f'Vendor string;{vendor_str}\n')
-        file.write(f'Firmware version;{fw}\n')
-        file.write(f'Image tag;{IMAGE_TAG}\n')
-        file.write(f'TPM devices;{";".join(glob.glob("/dev/tpm*"))}\n')
-
+            file.write(f'Tested and provided by: {self.email}\n')
+        file.write(f'Execution date/time: {datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")}\n')
+        file.write(f'Manufacturer: {manufacturer}\n')
+        file.write(f'Vendor string: {vendor_str}\n')
+        file.write(f'Firmware version: {fw}\n')
+        file.write(f'Image tag: {IMAGE_TAG}\n')
+        file.write(f'TPM devices: {", ".join(glob.glob("/dev/tpm*"))}\n')
         try:
-            system_manufacturer, product_name, system_version, bios_version, uname = self.get_system_id()
-            file.write(f'Device manufacturer;{system_manufacturer}\n')
-            file.write(f'Device name;{product_name}\n')
-            file.write(f'Device version;{system_version}\n')
-            file.write(f'BIOS version;{bios_version}\n\n')
-            file.write(f'System information;{uname}\n')
+            system_manufacturer, product_name, system_version, bios_version, uname = self.get_system_id(self.detail_dir)
+            file.write(f'Device manufacturer: {system_manufacturer}\n')
+            file.write(f'Device name: {product_name}\n')
+            file.write(f'Device version: {system_version}\n')
+            file.write(f'BIOS version: {bios_version}\n')
+            file.write(f'System information: {uname}\n')
         except:
             pass
-        file.write("\n")
+        file.write('\n')
 
     def get_system_id(self):
         uname = None
@@ -276,17 +275,17 @@ class TestResultCollector:
             with open(system_info, 'r') as dmidecode_file:
                 output = dmidecode_file.read().replace("\t", "").split("\n")
                 try:
-                    manufacturer = output[1].split(":")[1][1:]
+                    manufacturer = output[0].split(":")[1][1:]
                 except:
                     pass
 
                 try:
-                    product_name = output[2].split(":")[1][1:]
+                    product_name = output[1].split(":")[1][1:]
                 except:
                     pass
 
                 try:
-                    version = output[3].split(":")[1][1:]
+                    version = output[2].split(":")[1][1:]
                 except:
                     pass
         system_info = os.path.join(self.detail_dir, 'dmidecode_bios_version.txt')
@@ -311,9 +310,9 @@ class TestResultCollector:
         manufacturer = ''
         vendor_str = ''
         fw = ''
-        qt_properties = os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt')
-        if os.path.isfile(qt_properties):
-            with open(os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt'), 'r') as properties_file:
+        properties_path = os.path.join(self.detail_dir, 'Capability_properties-fixed.txt')
+        if os.path.isfile(properties_path):
+            with open(properties_path, 'r') as properties_file:
                 lines = properties_file.readlines()
                 for line in lines:
                     if "ERROR" in line:
@@ -321,7 +320,10 @@ class TestResultCollector:
                 fw1 = ''
                 fw2 = ''
                 for idx, line in enumerate(lines):
-                    val = get_val(lines[idx]) or get_val(lines[idx + 1])
+                    val = get_val(lines[idx])
+                    if idx + 1 < len(lines):
+                        val = val or get_val(lines[idx + 1])
+
                     if line.startswith('TPM2_PT_MANUFACTURER'):
                         manufacturer = bytearray.fromhex(val).decode()
                     elif line.startswith('TPM2_PT_FIRMWARE_VERSION_1'):
@@ -336,11 +338,11 @@ class TestResultCollector:
         vendor_str = vendor_str.replace('\0', '')
         return manufacturer, vendor_str, fw
 
-    def write_support_file(self, support_file):
-            qt_properties = os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt')
-            if os.path.isfile(qt_properties):
-                support_file.write('\nQuicktest_properties-fixed\n')
-                with open(os.path.join(self.detail_dir, 'Quicktest_properties-fixed.txt'), 'r') as infile:
+    def write_results_file(self, results_file):
+            properties_path = os.path.join(self.detail_dir, 'Capability_properties-fixed.txt')
+            if os.path.isfile(properties_path):
+                results_file.write('\nCapability_properties-fixed\n')
+                with open(properties_path, 'r') as infile:
                     properties = ""
                     for line in infile:
                         if line.startswith('  as UINT32:'):
@@ -349,90 +351,98 @@ class TestResultCollector:
                             line = line[line.find('"'):]
                             properties = properties[:-1] + '\t' + line
                         else:
-                            properties += line.replace(':', ';')
-                    support_file.write(properties)
+                            properties += line
+                    results_file.write(properties)
 
-            qt_algorithms = os.path.join(self.detail_dir, 'Quicktest_algorithms.txt')
-            if os.path.isfile(qt_algorithms):
-                support_file.write('\nQuicktest_algorithms\n')
-                with open(qt_algorithms, 'r') as infile:
+            algorithms_path = os.path.join(self.detail_dir, 'Capability_algorithms.txt')
+            if os.path.isfile(algorithms_path):
+                results_file.write('\nCapability_algorithms\n')
+                with open(algorithms_path, 'r') as infile:
                     for line in infile:
                         if line.startswith('  value:'):
                             line = line[line.find('0x'):]
-                            support_file.write(line)
+                            results_file.write(line)
 
-            qt_commands = os.path.join(self.detail_dir, 'Quicktest_commands.txt')
-            if os.path.isfile(qt_commands):
-                support_file.write('\nQuicktest_commands\n')
-                with open(qt_commands, 'r') as infile:
+            commands_path = os.path.join(self.detail_dir, 'Capability_commands.txt')
+            if os.path.isfile(commands_path):
+                results_file.write('\nCapability_commands\n')
+                with open(commands_path, 'r') as infile:
                     for line in infile:
                         if line.startswith('  commandIndex:'):
                             line = line[line.find('0x'):]
-                            support_file.write(line)
+                            results_file.write(line)
 
-            qt_ecc_curves = os.path.join(self.detail_dir, 'Quicktest_ecc-curves.txt')
-            if os.path.isfile(qt_ecc_curves):
-                support_file.write('\nQuicktest_ecc-curves\n')
-                with open(os.path.join(self.detail_dir, 'Quicktest_ecc-curves.txt'), 'r') as infile:
+            curves_path = os.path.join(self.detail_dir, 'Capability_ecc-curves.txt')
+            if os.path.isfile(curves_path):
+                results_file.write('\nCapability_ecc-curves\n')
+                with open(curves_path, 'r') as infile:
                     for line in infile:
                         line = line[line.find('(') + 1:line.find(')')]
-                        support_file.write(line + '\n')
+                        results_file.write(line + '\n')
+
 
     def write_perf_file(self, perf_file):
         perf_csvs = glob.glob(os.path.join(self.detail_dir, 'Perf_*.csv'))
         perf_csvs.sort()
-        command = ''
         for filepath in perf_csvs:
             filename = os.path.basename(filepath)
             params_idx = filename.find(':')
             suffix_idx = filename.find('.csv')
-            new_command = filename[5:suffix_idx if params_idx == -1 else params_idx]
+            command = filename[5:suffix_idx if params_idx == -1 else params_idx]
             params = filename[params_idx+1:suffix_idx].split('_')
-            if new_command != command:
-                command = new_command
-                perf_file.write('TPM2_' + command + '\n\n')
 
+            perf_file.write('TPM2_' + command + ':\n')
             if command == 'GetRandom':
-                perf_file.write(f'Data length (bytes):;32\n')
-            elif command in [ 'Sign', 'VerifySignature', 'RSA_Encrypt', 'RSA_Decrypt' ]:
-                perf_file.write(f'Key parameters:;{params[0]} {params[1]};Scheme:;{params[2]}\n')
+                perf_file.write('  data length (bytes): 32\n')
+            elif command in ('Sign', 'VerifySignature', 'RSA_Encrypt', 'RSA_Decrypt'):
+                perf_file.write(f'  key parameters: {params[0]} {params[1]}\n')
+                perf_file.write(f'  scheme: {params[2]}\n')
             elif command == 'EncryptDecrypt':
-                perf_file.write(f'Algorithm:;{params[0]};Key length:;{params[1]};Mode:;{params[2]};Encrypt/decrypt?:;{params[3]};Data length (bytes):;256\n')
+                perf_file.write(f'  algorithm: {params[0]}\n')
+                perf_file.write(f'  key length: {params[1]}\n')
+                perf_file.write(f'  mode: {params[2]}\n')
+                perf_file.write(f'  encrypt/decrypt?: {params[3]}\n')
+                perf_file.write('  data length (bytes): 256\n')
             elif command == 'HMAC':
-                perf_file.write('Hash algorithm:;SHA-256;Data length (bytes):;256\n')
+                perf_file.write('  hash algorithm: SHA-256\n')
+                perf_file.write('  data length (bytes): 256\n')
             elif command == 'Hash':
-                perf_file.write(f'Hash algorithm:;{params[0]};Data length (bytes):;256\n')
+                perf_file.write(f'  hash algorithm: {params[0]}\n')
+                perf_file.write('  data length (bytes): 256\n')
+            elif command == 'ZGen':
+                perf_file.write(f'  key parameters: {params[0]}\n')
+                perf_file.write(f'  scheme: {params[1]}\n')
             else:
-                perf_file.write(f'Key parameters:;{" ".join(params)}\n')
+                perf_file.write(f'  key parameters: {" ".join(params)}\n')
 
             with open(filepath, 'r') as infile:
                 avg_op, min_op, max_op, total, success, fail, error = self.compute_stats(infile)
-                perf_file.write(f'operation stats (ms/op):;avg op:;{avg_op:.2f};min op:;{min_op:.2f};max op:;{max_op:.2f}\n')
-                perf_file.write(f'operation info:;total iterations:;{total};successful:;{success};failed:;{fail};error:;{"None" if not error else error}\n\n')
+                perf_file.write(f'Operation stats (ms/op):\n')
+                perf_file.write(f'  avg op: {avg_op:.2f}\n')
+                perf_file.write(f'  min op: {min_op:.2f}\n')
+                perf_file.write(f'  max op: {max_op:.2f}\n')
+                perf_file.write(f'Operation info:\n')
+                perf_file.write(f'  total iterations: {total}\n')
+                perf_file.write(f'  successful: {success}\n')
+                perf_file.write(f'  failed: {fail}\n')
+                perf_file.write(f'  error: {"None" if not error else error}\n\n')
 
     def compute_stats(self, infile, *, rsa2048=False):
-        ignore = 5 if rsa2048 else 0
         success, fail, sum_op, min_op, max_op, avg_op = 0, 0, 0, 10000000000, 0, 0
         error = None
-        for line in infile:
-            if line.startswith('duration'):
-                continue
-            if ignore > 0:
-                ignore -= 1
-                continue
-            t, rc = line.split(',')[:2]
-            rc = rc.replace(' ', '')
-            rc = rc.replace('\n', '')
-            if rc == '0000':
-                success += 1
-            else:
-                error = rc
+        csv_input = csv.DictReader(infile, delimiter=',')
+
+        for record in csv_input:
+            if record["return_code"] != '0000':
+                error = record["return_code"]
                 fail += 1
                 continue
-            t = float(t)
+            success += 1
+            t = float(record["duration"])
             sum_op += t
             if t > max_op: max_op = t
             if t < min_op: min_op = t
+
         total = success + fail
         if success != 0:
             avg_op = (sum_op / success)
@@ -475,7 +485,7 @@ class AlgtestState(Enum):
 class TestType(Enum):
     PERFORMANCE = auto()
     KEYGEN = auto()
-    NONCE = auto()
+    CRYPTOOPS = auto()
     RNG = auto()
 
 
@@ -521,7 +531,7 @@ class AlgtestTestRunner(Thread):
         self.set_status("Collecting basic TPM info...")
         self.tick()
 
-        code = self.run_quicktest()
+        code = self.run_capability()
         if code != 0:
             self.append_text("Cannot collect TPM 2.0 info. Your TPM may probably be disabled in BIOS or you do not have a TPM 2.0.")
             self.set_status("Cannot collect TPM 2.0 info.")
@@ -554,7 +564,7 @@ class AlgtestTestRunner(Thread):
                 self.algtest_proc = subprocess.Popen(self.cmd + ["perf", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
             elif test == TestType.KEYGEN:
                 self.algtest_proc = subprocess.Popen(self.cmd + ["keygen", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
-            elif test == TestType.NONCE:
+            elif test == TestType.CRYPTOOPS:
                 self.algtest_proc = subprocess.Popen(self.cmd + ["cryptoops", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
             elif test == TestType.RNG:
                 self.algtest_proc = subprocess.Popen(self.cmd + ["rng", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
@@ -600,11 +610,11 @@ class AlgtestTestRunner(Thread):
                 self.tick()
                 self.keygen_post()
 
-            if test == TestType.NONCE and not self.get_shall_stop():
+            if test == TestType.CRYPTOOPS and not self.get_shall_stop():
                 self.append_text("Computing ECC nonces...")
                 self.set_status("Computing ECC nonces...")
                 self.tick()
-                self.nonce_post()
+                self.cryptoops_post()
 
             current_test += 1
 
@@ -792,27 +802,36 @@ class AlgtestTestRunner(Thread):
             self.tick()
             self.compute_rsa_privates(filename)
 
-    def nonce_post(self):
+    def cryptoops_post(self):
         self.set_percentage(min(self.percentage, 95))
         for filename in glob.glob(os.path.join(self.detail_dir, 'Cryptoops_Sign:ECC_*.csv')):
             self.tick()
             self.compute_nonce(filename)
 
-    def run_quicktest(self):
+        for filename in glob.glob(os.path.join(self.detail_dir, 'Cryptoops_Sign:RSA_*.csv')):
+            self.tick()
+            self.compute_rsa_privates(filename)
+
+
+    def run_capability(self):
         os.makedirs(self.detail_dir, exist_ok=True)
 
-        result = subprocess.run("sudo -n dmidecode -s bios-version", stderr=subprocess.STDOUT, stdout=subprocess.PIPE, shell=True)
-        with open(os.path.join(self.detail_dir, 'dmidecode_bios_version.txt'), 'w') as outfile:
-            outfile.write(result.stdout.decode("ascii"))
-        result = subprocess.run("sudo -n dmidecode | grep -A3 '^System Information'", stderr=subprocess.STDOUT, stdout=subprocess.PIPE, shell=True)
-        with open(os.path.join(self.detail_dir, 'dmidecode_system_info.txt'), 'w') as outfile:
-            outfile.write(result.stdout.decode("ascii"))
-        result = subprocess.run("uname -a", stderr=subprocess.STDOUT, stdout=subprocess.PIPE, shell=True)
-        with open(os.path.join(self.detail_dir, 'uname_system_info.txt'), 'w') as outfile:
-            outfile.write(result.stdout.decode("ascii"))
+        try:
+            result = subprocess.run("sudo -n dmidecode -s bios-version", stdout=subprocess.PIPE, shell=True)
+            with open(os.path.join(self.detail_dir, 'dmidecode_bios_version.txt'), 'w') as outfile:
+                outfile.write(result.stdout.decode("ascii"))
+            result = subprocess.run("sudo -n dmidecode -t system | grep -Ei '^\\s*(manufacturer|product name|version):'", stdout=subprocess.PIPE, shell=True)
+
+            with open(os.path.join(self.detail_dir, 'dmidecode_system_info.txt'), 'w') as outfile:
+                outfile.write(result.stdout.decode("ascii"))
+            result = subprocess.run("uname -a", stdout=subprocess.PIPE, shell=True)
+            with open(os.path.join(self.detail_dir, 'uname_system_info.txt'), 'w') as outfile:
+                outfile.write(result.stdout.decode("ascii"))
+        except:
+            self.append_text("Could not obtain system information")
 
         result = subprocess.run(['tpm2_pcrread', '-T', TCTI_SPEC], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
-        with open(os.path.join(self.detail_dir, 'Quicktest_pcrread.txt'), 'w') as outfile:
+        with open(os.path.join(self.detail_dir, 'Capability_pcrread.txt'), 'w') as outfile:
             outfile.write(result.stdout.decode("ascii"))
 
         run_command = ['tpm2_getcap', '-T', TCTI_SPEC]
@@ -834,11 +853,11 @@ class AlgtestTestRunner(Thread):
         categories = ['algorithms', 'commands', 'properties-fixed', 'properties-variable', 'ecc-curves', 'handles-persistent']
         for category in categories:
             self.tick()
-            result = subprocess.run(run_command + [category], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
+            result = subprocess.run(run_command + [category], stderr=subprocess.DEVNULL, stdout=subprocess.PIPE)
             # read the output, except the trailing newline
             self.append_text(result.stdout.decode("ascii")[:-1])
             self.tick()
-            with open(os.path.join(self.detail_dir, f'Quicktest_{category}.txt'), 'w') as outfile:
+            with open(os.path.join(self.detail_dir, f'Capability_{category}.txt'), 'w') as outfile:
                 outfile.write(result.stdout.decode("ascii"))
             if result.returncode != 0:
                 self.append_text("Command '" + " ".join(run_command + [category]) + "' failed with return code " + str(result.returncode))
@@ -930,7 +949,7 @@ class AlgtestTestRunner(Thread):
                 self.tick()
                 writer.writerow(row)
 
-    def compute_rsa_privates(self, filename,sep=";"):
+    def compute_rsa_privates(self, filename):
         def extended_euclidean(a, b):
             x0, x1, y0, y1 = 0, 1, 1, 0
             while a != 0:
@@ -973,7 +992,7 @@ class AlgtestTestRunner(Thread):
 
         rows = []
         with open(filename) as infile:
-            reader = csv.DictReader(infile, delimiter=sep)
+            reader = csv.DictReader(infile, delimiter=',')
             for row in reader:
                 rows.append(row)
 
@@ -989,7 +1008,7 @@ class AlgtestTestRunner(Thread):
 
         with open(filename, 'w') as outfile:
             writer = csv.DictWriter(
-                    outfile, delimiter=sep, fieldnames=list(rows[0].keys()))
+                    outfile, delimiter=',', fieldnames=list(rows[0].keys()))
             writer.writeheader()
             for row in rows:
                 writer.writerow(row)
@@ -1258,13 +1277,13 @@ class TPM2AlgtestUI:
 
                     if ev.widget() == self.start_short_button:
                         duration = SHORT_TEST_ITERATIONS
-                        rng_iterations = 4000
+                        rng_iterations = 16384
                     elif ev.widget() == self.start_extensive_button:
                         duration = EXTENSIVE_TEST_ITERATIONS
                         # 14MB
-                        rng_iterations = (14 * 1024 * 1024 * 8) // 32
+                        rng_iterations = 524288
 
-                    self.algtest_runner.schedule_test((TestType.NONCE, duration))
+                    self.algtest_runner.schedule_test((TestType.CRYPTOOPS, duration))
                     self.algtest_runner.schedule_test((TestType.RNG, rng_iterations))
                     self.algtest_runner.schedule_test((TestType.PERFORMANCE, SHORT_TEST_ITERATIONS))
                     self.algtest_runner.schedule_test((TestType.KEYGEN, duration))
