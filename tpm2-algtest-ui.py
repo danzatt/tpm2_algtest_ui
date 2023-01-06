@@ -11,14 +11,10 @@ from threading import Thread, Lock
 import subprocess
 import fcntl
 import os
-import csv
-import glob
 import requests
 import json
 import datetime
-import zipfile
-import hashlib
-import math
+import re
 
 from shutil import copyfile
 from uuid import uuid4
@@ -28,10 +24,10 @@ import urllib.request
 from yui import YUI
 from yui import YEvent
 
-VERSION = ' v.0.4'
+VERSION = 'v.0.5'
 IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
-TCTI_SPEC = "device:/dev/tpm0"
+RUN_ALGTEST_SCRIPT = "run_algtest.py"
 DEPOSITORY_UCO = 4085
 INFO_MESSAGE = \
 """<b>Experiment</b>: Analysis of Trusted Platform Modules
@@ -210,270 +206,6 @@ class ISUploader:
         return True
 
 
-class TestResultCollector:
-    def __init__(self, outdir, email, ui_log, watchdog_tick=None):
-        self.outdir = outdir
-        self.detail_dir = os.path.join(self.outdir, 'detail')
-        self.zip_path = None
-        self.email = email
-        self.ui_log = ui_log
-        self.watchdog_tick = watchdog_tick
-
-    def create_result_files(self):
-        self.tick()
-        manufacturer, vendor_str, fw = self.get_tpm_id()
-        file_name = manufacturer + '_' + vendor_str + '_' + fw + '.csv'
-
-        os.makedirs(os.path.join(self.outdir, 'results'), exist_ok=True)
-        with open(os.path.join(self.outdir, 'results', file_name), 'w') as support_file:
-            self.write_header(support_file)
-            self.write_results_file(support_file)
-        self.tick()
-
-        os.makedirs(os.path.join(self.outdir, 'performance'), exist_ok=True)
-        with open(os.path.join(self.outdir, 'performance', file_name), 'w') as perf_file:
-            self.write_header(perf_file)
-            self.write_perf_file(perf_file)
-        self.tick()
-
-        with open(os.path.join(self.outdir, 'ui_timestamp_log.log'), 'w') as ui_log_file:
-            ui_log_file.write("\n".join(self.ui_log))
-        self.tick()
-
-    def write_header(self, file):
-        self.tick()
-        manufacturer, vendor_str, fw = self.get_tpm_id()
-        self.tick()
-        if self.email is not None:
-            file.write(f'Tested and provided by: {self.email}\n')
-        file.write(f'Execution date/time: {datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")}\n')
-        file.write(f'Manufacturer: {manufacturer}\n')
-        file.write(f'Vendor string: {vendor_str}\n')
-        file.write(f'Firmware version: {fw}\n')
-        file.write(f'Image tag: {IMAGE_TAG}\n')
-        file.write(f'TPM devices: {", ".join(glob.glob("/dev/tpm*"))}\n')
-        try:
-            system_manufacturer, product_name, system_version, bios_version, uname = self.get_system_id(self.detail_dir)
-            file.write(f'Device manufacturer: {system_manufacturer}\n')
-            file.write(f'Device name: {product_name}\n')
-            file.write(f'Device version: {system_version}\n')
-            file.write(f'BIOS version: {bios_version}\n')
-            file.write(f'System information: {uname}\n')
-        except:
-            pass
-        file.write('\n')
-
-    def get_system_id(self):
-        uname = None
-        manufacturer = None
-        product_name = None
-        version = None
-        bios_version = None
-
-        system_info = os.path.join(self.detail_dir, 'dmidecode_system_info.txt')
-        if os.path.isfile(system_info):
-            with open(system_info, 'r') as dmidecode_file:
-                output = dmidecode_file.read().replace("\t", "").split("\n")
-                try:
-                    manufacturer = output[0].split(":")[1][1:]
-                except:
-                    pass
-
-                try:
-                    product_name = output[1].split(":")[1][1:]
-                except:
-                    pass
-
-                try:
-                    version = output[2].split(":")[1][1:]
-                except:
-                    pass
-        system_info = os.path.join(self.detail_dir, 'dmidecode_bios_version.txt')
-        if os.path.isfile(system_info):
-            with open(system_info, 'r') as dmidecode_bios_file:
-                bios_version = dmidecode_bios_file.readline()[:-1]
-
-        system_info = os.path.join(self.detail_dir, 'uname_system_info.txt')
-        if os.path.isfile(system_info):
-            with open(system_info, 'r') as uname_file:
-                uname = uname_file.readline()[:-1]
-        return manufacturer, product_name, version, bios_version, uname
-
-    def get_tpm_id(self):
-        def get_val(line):
-            pos = line.find('0x')
-            if pos == -1:
-                return None
-            val = line[line.find('0x') + 2:-1]
-            return "0" * (8 - len(val)) + val
-
-        manufacturer = ''
-        vendor_str = ''
-        fw = ''
-        properties_path = os.path.join(self.detail_dir, 'Capability_properties-fixed.txt')
-        if os.path.isfile(properties_path):
-            with open(properties_path, 'r') as properties_file:
-                lines = properties_file.readlines()
-                for line in lines:
-                    if "ERROR" in line:
-                        return "", "", ""
-                fw1 = ''
-                fw2 = ''
-                for idx, line in enumerate(lines):
-                    val = get_val(lines[idx])
-                    if idx + 1 < len(lines):
-                        val = val or get_val(lines[idx + 1])
-
-                    if line.startswith('TPM2_PT_MANUFACTURER'):
-                        manufacturer = bytearray.fromhex(val).decode()
-                    elif line.startswith('TPM2_PT_FIRMWARE_VERSION_1'):
-                        fw1 = val
-                    elif line.startswith('TPM2_PT_FIRMWARE_VERSION_2'):
-                        fw2 = val
-                    elif line.startswith('TPM2_PT_VENDOR_STRING_'):
-                        vendor_str += bytearray.fromhex(val).decode()
-                fw = str(int(fw1[0:4], 16)) + '.' + str(int(fw1[4:8], 16)) + '.' + str(int(fw2[0:4], 16)) + '.' + str(int(fw2[4:8], 16))
-
-        manufacturer = manufacturer.replace('\0', '')
-        vendor_str = vendor_str.replace('\0', '')
-        return manufacturer, vendor_str, fw
-
-    def write_results_file(self, results_file):
-            properties_path = os.path.join(self.detail_dir, 'Capability_properties-fixed.txt')
-            if os.path.isfile(properties_path):
-                results_file.write('\nCapability_properties-fixed\n')
-                with open(properties_path, 'r') as infile:
-                    properties = ""
-                    for line in infile:
-                        if line.startswith('  as UINT32:'):
-                            continue
-                        if line.startswith('  as string:'):
-                            line = line[line.find('"'):]
-                            properties = properties[:-1] + '\t' + line
-                        else:
-                            properties += line
-                    results_file.write(properties)
-
-            algorithms_path = os.path.join(self.detail_dir, 'Capability_algorithms.txt')
-            if os.path.isfile(algorithms_path):
-                results_file.write('\nCapability_algorithms\n')
-                with open(algorithms_path, 'r') as infile:
-                    for line in infile:
-                        if line.startswith('  value:'):
-                            line = line[line.find('0x'):]
-                            results_file.write(line)
-
-            commands_path = os.path.join(self.detail_dir, 'Capability_commands.txt')
-            if os.path.isfile(commands_path):
-                results_file.write('\nCapability_commands\n')
-                with open(commands_path, 'r') as infile:
-                    for line in infile:
-                        if line.startswith('  commandIndex:'):
-                            line = line[line.find('0x'):]
-                            results_file.write(line)
-
-            curves_path = os.path.join(self.detail_dir, 'Capability_ecc-curves.txt')
-            if os.path.isfile(curves_path):
-                results_file.write('\nCapability_ecc-curves\n')
-                with open(curves_path, 'r') as infile:
-                    for line in infile:
-                        line = line[line.find('(') + 1:line.find(')')]
-                        results_file.write(line + '\n')
-
-
-    def write_perf_file(self, perf_file):
-        perf_csvs = glob.glob(os.path.join(self.detail_dir, 'Perf_*.csv'))
-        perf_csvs.sort()
-        for filepath in perf_csvs:
-            filename = os.path.basename(filepath)
-            params_idx = filename.find(':')
-            suffix_idx = filename.find('.csv')
-            command = filename[5:suffix_idx if params_idx == -1 else params_idx]
-            params = filename[params_idx+1:suffix_idx].split('_')
-
-            perf_file.write('TPM2_' + command + ':\n')
-            if command == 'GetRandom':
-                perf_file.write('  data length (bytes): 32\n')
-            elif command in ('Sign', 'VerifySignature', 'RSA_Encrypt', 'RSA_Decrypt'):
-                perf_file.write(f'  key parameters: {params[0]} {params[1]}\n')
-                perf_file.write(f'  scheme: {params[2]}\n')
-            elif command == 'EncryptDecrypt':
-                perf_file.write(f'  algorithm: {params[0]}\n')
-                perf_file.write(f'  key length: {params[1]}\n')
-                perf_file.write(f'  mode: {params[2]}\n')
-                perf_file.write(f'  encrypt/decrypt?: {params[3]}\n')
-                perf_file.write('  data length (bytes): 256\n')
-            elif command == 'HMAC':
-                perf_file.write('  hash algorithm: SHA-256\n')
-                perf_file.write('  data length (bytes): 256\n')
-            elif command == 'Hash':
-                perf_file.write(f'  hash algorithm: {params[0]}\n')
-                perf_file.write('  data length (bytes): 256\n')
-            elif command == 'ZGen':
-                perf_file.write(f'  key parameters: {params[0]}\n')
-                perf_file.write(f'  scheme: {params[1]}\n')
-            else:
-                perf_file.write(f'  key parameters: {" ".join(params)}\n')
-
-            with open(filepath, 'r') as infile:
-                avg_op, min_op, max_op, total, success, fail, error = self.compute_stats(infile)
-                perf_file.write(f'Operation stats (ms/op):\n')
-                perf_file.write(f'  avg op: {avg_op:.2f}\n')
-                perf_file.write(f'  min op: {min_op:.2f}\n')
-                perf_file.write(f'  max op: {max_op:.2f}\n')
-                perf_file.write(f'Operation info:\n')
-                perf_file.write(f'  total iterations: {total}\n')
-                perf_file.write(f'  successful: {success}\n')
-                perf_file.write(f'  failed: {fail}\n')
-                perf_file.write(f'  error: {"None" if not error else error}\n\n')
-
-    def compute_stats(self, infile, *, rsa2048=False):
-        success, fail, sum_op, min_op, max_op, avg_op = 0, 0, 0, 10000000000, 0, 0
-        error = None
-        csv_input = csv.DictReader(infile, delimiter=',')
-
-        for record in csv_input:
-            if record["return_code"] != '0000':
-                error = record["return_code"]
-                fail += 1
-                continue
-            success += 1
-            t = float(record["duration"])
-            sum_op += t
-            if t > max_op: max_op = t
-            if t < min_op: min_op = t
-
-        total = success + fail
-        if success != 0:
-            avg_op = (sum_op / success)
-        else:
-            min_op = 0
-
-        return avg_op * 1000, min_op * 1000, max_op * 1000, total, success, fail, error # sec -> ms
-
-    def zip(self):
-        self.tick()
-        self.zip_path = self.outdir + '.zip'
-        zipf = zipfile.ZipFile(self.zip_path, 'w', zipfile.ZIP_DEFLATED)
-        for root, _, files in os.walk(self.outdir):
-            for file in files:
-                self.tick()
-                file_path = os.path.join(root, file)
-                zipf.write(file_path, file_path[len(self.outdir):])
-                self.tick()
-        self.tick()
-        zipf.close()
-
-    def generate_zip(self):
-        self.create_result_files()
-        self.zip()
-        return self.zip_path
-
-    def tick(self, alive=True):
-        if self.watchdog_tick is not None:
-            self.watchdog_tick(alive)
-
-
 class AlgtestState(Enum):
     NOT_RUNNING = auto()
     RUNNING = auto()
@@ -482,24 +214,19 @@ class AlgtestState(Enum):
     STOPPED = auto()
 
 
-class TestType(Enum):
-    PERFORMANCE = auto()
-    KEYGEN = auto()
-    CRYPTOOPS = auto()
-    RNG = auto()
-
-
 class StoreType(Enum):
     STORE_USB = auto()
     UPLOAD = auto()
     CANCEL = auto()
 
+
 class AlgtestTestRunner(Thread):
-    def __init__(self, out_dir, watchdog_tick = None):
+    def __init__(self, out_dir, extensive, watchdog_tick=None):
         super().__init__(name="AlgtestTestRunner")
         self.out_dir = out_dir
         self.detail_dir = os.path.join(self.out_dir, 'detail')
-        self.cmd = ["tpm2_algtest", "-T", TCTI_SPEC, '--outdir=' + self.detail_dir, "-s"]
+        self.cmd = [RUN_ALGTEST_SCRIPT, '--include-legacy', '--machine-readable-statuses', '--use-system-algtest', '--outdir', self.out_dir, "--with-image-tag", IMAGE_TAG]
+        self.extensive = extensive
 
         self.percentage = 0
         self.text = []
@@ -517,115 +244,87 @@ class AlgtestTestRunner(Thread):
 
         self.test_finished = False
         self.email = None
-        self.result_collector = None
 
         self.uploader = ISUploader("tpm2-algtest-ui", DEPOSITORY_UCO)
 
-    def run(self):
+    def run_and_monitor(self, cmd):
+        with self.info_lock:
+            self.shall_stop = False
         self.set_state(AlgtestState.RUNNING)
-        self.set_percentage(1)
-        total_tests = len(self.tests_to_run)
-        current_test = 1
+        self.algtest_proc = subprocess.Popen(cmd, stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
 
-        self.append_text("Collecting basic TPM info...")
-        self.set_status("Collecting basic TPM info...")
+        fd = self.algtest_proc.stdout.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+        self.monitor_algtest()
+
+        if self.algtest_proc.poll() is None:
+            if self.get_shall_stop():
+                self.algtest_proc.terminate()
+
+            print("Waiting for the tpm2_algtest process to finish...")
+            self.append_text("Waiting for the tpm2_algtest process to finish...")
+            self.algtest_proc.wait()
+
+        # read the rest of output, except the trailing newline
+        text = self.algtest_proc.stdout.read()
+        if text:
+            self.append_text(text.decode("ascii")[:-1])
+
+        return self.algtest_proc.returncode
+
+    def format_results(self):
+        self.append_text("Formatting results...")
+        self.set_status("Formatting results...")
+        code = self.run_and_monitor(self.cmd + ["format"])
+        if code != 0:
+            if not self.get_shall_stop():
+                self.set_status("Failed to format the results.")
+                self.set_state(AlgtestState.FAILED)
+            else:
+                self.set_status("Stop requested.")
+                self.set_state(AlgtestState.STOPPED)
+            self.tick(False)
+        else:
+            self.set_state(AlgtestState.SUCCESS)
+            self.set_status("Formatted the results successfully.")
+        return code
+
+    def run(self):
+        self.set_percentage(1)
+        self.append_text("Starting TPM test..")
+        os.makedirs(self.detail_dir, exist_ok=True)
         self.tick()
 
-        code = self.run_capability()
+        code = self.run_and_monitor(self.cmd + ["extensive" if self.extensive else "all"])
         if code != 0:
-            self.append_text("Cannot collect TPM 2.0 info. Your TPM may probably be disabled in BIOS or you do not have a TPM 2.0.")
-            self.set_status("Cannot collect TPM 2.0 info.")
-            self.set_state(AlgtestState.FAILED)
-            self.zip_results()
-            self.tick(False)
-            return code
-
-        result_collector = TestResultCollector(self.out_dir, self.get_mail(), self.text, self.watchdog_tick)
-        manufacturer, vendor_str, fw = result_collector.get_tpm_id()
-        self.append_text("TPM 2.0 detected")
-        self.append_text(f'TPM manufacturer: "{manufacturer}"')
-        self.append_text(f'TPM firmware version: "{fw}"')
-        self.append_text(f'TPM vendor string: "{vendor_str}"')
-
-        while self.tests_to_run and not self.get_shall_stop():
-            test, duration = self.tests_to_run.popleft()
-            os.makedirs(self.detail_dir, exist_ok=True)
-
-            self.append_text(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
-            self.set_status(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
-            print(f"Running the {test.name.lower()} test... ({current_test}/{total_tests})")
-
-            absolute_percentage = int(((current_test - 1) / total_tests) * 100)
-            absolute_percentage = min(absolute_percentage + 1, 100)  # at this point test is started, so we make the progress at least 1 percent
-            self.set_percentage(absolute_percentage)
-
-            self.tick()
-            if test == TestType.PERFORMANCE:
-                self.algtest_proc = subprocess.Popen(self.cmd + ["perf", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
-            elif test == TestType.KEYGEN:
-                self.algtest_proc = subprocess.Popen(self.cmd + ["keygen", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
-            elif test == TestType.CRYPTOOPS:
-                self.algtest_proc = subprocess.Popen(self.cmd + ["cryptoops", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
-            elif test == TestType.RNG:
-                self.algtest_proc = subprocess.Popen(self.cmd + ["rng", "-n", str(duration)], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
-
-            fd = self.algtest_proc.stdout.fileno()
-            fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-
-            self.monitor_algtest(current_test, total_tests)
-
-            if self.algtest_proc.poll() is None:
-                if self.get_shall_stop():
-                    self.algtest_proc.terminate()
-
-                print("Waiting for the tpm2_algtest process to finish...")
-                self.append_text("Waiting for the tpm2_algtest process to finish...")
-                self.algtest_proc.wait()
-
-            # read the rest of output, except the trailing newline
-            self.append_text(self.algtest_proc.stdout.read().decode("ascii")[:-1])
-
-            code = self.algtest_proc.returncode
-            if code != 0:
-                if not self.get_shall_stop():
-                    print("The tpm2_algtest process failed. Please try to re-run the test.")
-                    self.append_text("The tpm2_algtest process failed. Please try to re-run the test.")
-                    self.set_status("The tpm2_algtest process failed.")
-                    self.set_state(AlgtestState.FAILED)
-                    self.tick(False)
-                else:
-                    self.set_status("Stop requested.")
-                    self.set_state(AlgtestState.STOPPED)
-                    self.tick(False)
-                self.zip_results()
+            if not self.get_shall_stop():
+                print("The run_algtest process failed. Please try to re-run the test.")
+                self.append_text("The run_algtest process failed. Please try to re-run the test.")
+                self.set_status("The run_algtest process failed.")
+                self.set_state(AlgtestState.FAILED)
                 self.tick(False)
-                return code
-
-            self.append_text(f"The {test.name.lower()} test finished")
-
-            if test == TestType.KEYGEN and not self.get_shall_stop():
-                self.append_text("Computing RSA private keys...")
-                self.set_status("Computing RSA private keys...")
-                self.tick()
-                self.keygen_post()
-
-            if test == TestType.CRYPTOOPS and not self.get_shall_stop():
-                self.append_text("Computing ECC nonces...")
-                self.set_status("Computing ECC nonces...")
-                self.tick()
-                self.cryptoops_post()
-
-            current_test += 1
+                self.format_results()
+                self.tick(False)
+            else:
+                self.set_status("Stop requested.")
+                self.set_state(AlgtestState.STOPPED)
+                self.tick(False)
+                self.format_results()
+                self.tick(False)
+            with self.info_lock:
+                self.test_finished = True
+            return code
 
         self.append_text("Testing internet connection...")
         self.set_status("Testing internet connection...")
         self.test_connection()
         self.tick()
-        self.append_text("Compressing results...")
-        self.set_status("Compressing results...")
-        self.zip_results()
-        self.tick()
+
+        self.set_percentage(100)
+        with self.info_lock:
+            self.test_finished = True
 
         if self.get_shall_stop():
             self.append_text("Stop requested.")
@@ -642,26 +341,12 @@ class AlgtestTestRunner(Thread):
 
     def test_connection(self):
         try:
-            urllib.request.urlopen('http://google.com', timeout=2) #Python 3.x
+            urllib.request.urlopen('http://google.com', timeout=2)  # Python 3.x
             with self.info_lock:
                 self.internet_connected = True
         except:
             with self.info_lock:
                 self.internet_connected = False
-
-    def zip_results(self):
-        self.append_text("Please wait, collecting results...")
-        self.set_status("Please wait, collecting results...")
-        self.tick()
-        if self.result_collector is None:
-            self.result_collector = TestResultCollector(self.out_dir, self.get_mail(), self.text, self.watchdog_tick)
-        self.result_collector.generate_zip()
-        self.append_text("Results collected.")
-        self.set_status("Results collected.")
-
-        self.set_percentage(100)
-        with self.info_lock:
-            self.test_finished = True
 
     def store_results(self, store_type):
         result_zip = self.out_dir + '.zip'
@@ -694,14 +379,6 @@ class AlgtestTestRunner(Thread):
                 self.append_text("Results upload failed.")
                 self.set_status("Results upload failed.")
 
-    def set_mail(self, email):
-        with self.info_lock:
-            self.email = email
-
-    def get_mail(self):
-        with self.info_lock:
-            return self.email
-
     def is_finished(self):
         with self.info_lock:
             return self.test_finished
@@ -718,31 +395,49 @@ class AlgtestTestRunner(Thread):
             self.info_changed = False
             return True
 
-    def monitor_algtest(self, current_test, total_tests):
+    def monitor_algtest(self):
         if self.algtest_proc is None:
             return
+
+        status_regex = re.compile(r'(\+\+\+)(.*)(\+\+\+)')
 
         while self.algtest_proc.poll() is None and not self.get_shall_stop():
             self.tick()
 
             line = self.algtest_proc.stdout.readline().decode("ascii")
             while line != "" and not self.get_shall_stop():
+                self.tick()
+
+                match = status_regex.search(line)
                 if 2 < len(line) <= 5 and line[-2] == "%":
-                    current_test_percentage = int(line[:-2]) / 100
-                    absolute_percentage = ((current_test - 1) / total_tests) + (1/total_tests) * current_test_percentage
-                    absolute_percentage = int(absolute_percentage * 100)
-                    absolute_percentage = min(absolute_percentage + 1, 100)  # at this point test is started, so we make the progress at least 1 percent
-                    self.set_percentage(absolute_percentage)
+                    self.set_current_test_percentage(int(line[:-2]) / 100)
+                elif match:
+                    self.set_status(match.group(2))
+                    self.append_text(match.group(2))
                 else:
                     self.append_text(line[:-1])
                 line = self.algtest_proc.stdout.readline().decode("ascii")
 
+    def set_current_test_percentage(self, current_test_percentage):
+        regexp = re.compile(r'\([0-9]+/[0-9]+\)')
+        match = regexp.search(self.get_status())
+        if match:
+            current_test, total_tests = match.group(0)[1:-1].split('/')
+            current_test = int(current_test)
+            total_tests = int(total_tests)
+            absolute_percentage = ((current_test - 1) / total_tests) + (1/total_tests) * current_test_percentage
+            absolute_percentage = int(absolute_percentage * 100)
+
+            # at this point test is started, so we make the progress at least 1 percent
+            absolute_percentage = min(absolute_percentage + 1, 100)
+            self.set_percentage(absolute_percentage)
 
     def append_text(self, text):
         for line in text.splitlines():
             with self.info_lock:
-                self.text.append(datetime.datetime.now().strftime("%H:%M:%S") + " " + line)
-                self.info_changed = True
+                if line != "":
+                    self.text.append(datetime.datetime.now().strftime("%H:%M:%S") + " " + line)
+                    self.info_changed = True
 
     def get_text(self, lines=400):
         with self.info_lock:
@@ -796,78 +491,6 @@ class AlgtestTestRunner(Thread):
         with self.info_lock:
             return self.shall_stop
 
-    def keygen_post(self):
-        self.set_percentage(min(self.percentage, 95))
-        for filename in glob.glob(os.path.join(self.detail_dir, 'Keygen:RSA_*.csv')):
-            self.tick()
-            self.compute_rsa_privates(filename)
-
-    def cryptoops_post(self):
-        self.set_percentage(min(self.percentage, 95))
-        for filename in glob.glob(os.path.join(self.detail_dir, 'Cryptoops_Sign:ECC_*.csv')):
-            self.tick()
-            self.compute_nonce(filename)
-
-        for filename in glob.glob(os.path.join(self.detail_dir, 'Cryptoops_Sign:RSA_*.csv')):
-            self.tick()
-            self.compute_rsa_privates(filename)
-
-
-    def run_capability(self):
-        os.makedirs(self.detail_dir, exist_ok=True)
-
-        try:
-            result = subprocess.run("sudo -n dmidecode -s bios-version", stdout=subprocess.PIPE, shell=True)
-            with open(os.path.join(self.detail_dir, 'dmidecode_bios_version.txt'), 'w') as outfile:
-                outfile.write(result.stdout.decode("ascii"))
-            result = subprocess.run("sudo -n dmidecode -t system | grep -Ei '^\\s*(manufacturer|product name|version):'", stdout=subprocess.PIPE, shell=True)
-
-            with open(os.path.join(self.detail_dir, 'dmidecode_system_info.txt'), 'w') as outfile:
-                outfile.write(result.stdout.decode("ascii"))
-            result = subprocess.run("uname -a", stdout=subprocess.PIPE, shell=True)
-            with open(os.path.join(self.detail_dir, 'uname_system_info.txt'), 'w') as outfile:
-                outfile.write(result.stdout.decode("ascii"))
-        except:
-            self.append_text("Could not obtain system information")
-
-        result = subprocess.run(['tpm2_pcrread', '-T', TCTI_SPEC], stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
-        with open(os.path.join(self.detail_dir, 'Capability_pcrread.txt'), 'w') as outfile:
-            outfile.write(result.stdout.decode("ascii"))
-
-        run_command = ['tpm2_getcap', '-T', TCTI_SPEC]
-
-        getcap_proc = subprocess.Popen(["tpm2_getcap", "-v"], stdout=subprocess.PIPE)
-        line = getcap_proc.stdout.readline().decode("ascii")
-        version_begin = line.find('version="') + len('version="')
-        version_end = line.find('"', version_begin)
-        version = line[version_begin:version_end].split(".")
-        version = list(map(int, version))
-
-        self.tick()
-
-        # newer versions take category directly as an argument, older need -c
-        if version < [4, 0, 0]:
-            run_command.append("-c")
-
-        result_code = 0
-        categories = ['algorithms', 'commands', 'properties-fixed', 'properties-variable', 'ecc-curves', 'handles-persistent']
-        for category in categories:
-            self.tick()
-            result = subprocess.run(run_command + [category], stderr=subprocess.DEVNULL, stdout=subprocess.PIPE)
-            # read the output, except the trailing newline
-            self.append_text(result.stdout.decode("ascii")[:-1])
-            self.tick()
-            with open(os.path.join(self.detail_dir, f'Capability_{category}.txt'), 'w') as outfile:
-                outfile.write(result.stdout.decode("ascii"))
-            if result.returncode != 0:
-                self.append_text("Command '" + " ".join(run_command + [category]) + "' failed with return code " + str(result.returncode))
-                result_code = result.returncode
-        self.tick()
-        return result_code
-
-    def schedule_test(self, test):
-        self.tests_to_run.append(test)
-
     def terminate(self):
         self.stop()
         if self.is_alive():
@@ -875,143 +498,6 @@ class AlgtestTestRunner(Thread):
 
         if self.algtest_proc is not None and self.algtest_proc.poll() is None:
             self.algtest_proc.terminate()
-
-    def compute_nonce(self, filename):
-        CURVE_ORDER = {
-            "P256": 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551,
-            "P384": 0xffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973,
-            "BN256": 0xfffffffffffcf0cd46e5f25eee71a49e0cdc65fb1299921af62d536cd10b500d
-        }
-
-        def extract_ecdsa_nonce(n, r, s, x, e):
-            # https://en.wikipedia.org/wiki/Elliptic_Curve_Digital_Signature_Algorithm
-            return (pow(s, -1, n) * (e + (r * x) % n) % n) % n
-
-        def extract_ecschnorr_nonce(n, r, s, x, e):
-            # https://trustedcomputinggroup.org/wp-content/uploads/TPM2.0-Library-Spec-v1.16-Errata_v1.5_09212016.pdf
-            return (s - (r * x) % n) % n
-
-        def extract_sm2_nonce(n, r, s, x, e):
-            # https://crypto.stackexchange.com/questions/9918/reasons-for-chinese-sm2-digital-signature-algorithm
-            return (s + (s * x) % n + (r * x) % n) % n
-
-        def extract_ecdaa_nonce(n, r, s, x, e):
-            # https://trustedcomputinggroup.org/wp-content/uploads/TCG_TPM2_r1p59_Part1_Architecture_pub.pdf
-            hasher = hashlib.sha256()
-            hasher.update(int.to_bytes(r, byteorder="big", length=math.ceil(math.log2(n))))
-            hasher.update(int.to_bytes(e, byteorder="big", length=math.ceil(math.log2(n))))
-            h = int.from_bytes(hasher.digest(), byteorder="big")
-            return (s - h * x) % n
-
-        def compute_row(row):
-            try:
-                digest = int(row['digest'], 16)
-                curve = { 0x3: "P256", 0x4: "P384", 0x10: "BN256" }[int(row['curve'], 16)]
-                algorithm = { 0x18: "ECDSA", 0x1a: "ECDAA", 0x1b: "SM2", 0x1c: "ECSCHNORR" }[int(row['algorithm'], 16)]
-                signature_r = int(row['signature_r'], 16)
-                signature_s = int(row['signature_s'], 16)
-                private_key = int(row['private_key'], 16)
-
-                row['nonce'] = hex({
-                    "ECDSA": extract_ecdsa_nonce,
-                    "ECSCHNORR": extract_ecschnorr_nonce,
-                    "SM2": extract_sm2_nonce,
-                    "ECDAA": extract_ecdaa_nonce
-                }[algorithm](CURVE_ORDER[curve], signature_r, signature_s, private_key, digest))[2:]
-
-            except:
-                return False
-            return True
-
-        rows = []
-        with open(filename) as infile:
-            reader = csv.DictReader(infile, delimiter=',')
-            for row in reader:
-                self.tick()
-                rows.append(row)
-
-        failed = 0
-        for i, row in enumerate(rows):
-            if self.get_shall_stop():
-                return
-            self.tick()
-            self.append_text(f"Computing ECC row {i} out of {len(rows)}")
-            failed += 0 if compute_row(row) else 1
-
-        if failed > 0:
-            print(f"Computation of {failed} rows failed")
-
-        with open(filename, 'w') as outfile:
-            writer = csv.DictWriter(
-                    outfile, delimiter=',', fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            for row in rows:
-                self.tick()
-                writer.writerow(row)
-
-    def compute_rsa_privates(self, filename):
-        def extended_euclidean(a, b):
-            x0, x1, y0, y1 = 0, 1, 1, 0
-            while a != 0:
-                q, b, a = b // a, a, b % a
-                y0, y1 = y1, y0 - q * y1
-                x0, x1 = x1, x0 - q * x1
-            return b, x0, y0
-
-        def mod_exp(base, exp, n):
-            res = 1
-            base %= n
-            while exp > 0:
-                if exp % 2 == 1:
-                    res *= base
-                    res %= n
-                exp //= 2
-                base *= base
-                base %= n
-            return res
-
-        def compute_row(row):
-            try:
-                n = int(row['n'], 16)
-                e = int(row['e'], 16)
-                p = int(row['p'], 16)
-            except:
-                return False
-            q = n // p
-            totient = (p - 1) * (q - 1)
-            _, d, _ = extended_euclidean(e, totient)
-            d %= totient
-
-            message = 12345678901234567890
-            assert mod_exp(mod_exp(message, e, n), d, n) == message, \
-                f"Something went wrong (row {row['id']})"
-
-            row['q'] = '%X' % q
-            row['d'] = '%X' % d
-            return True
-
-        rows = []
-        with open(filename) as infile:
-            reader = csv.DictReader(infile, delimiter=',')
-            for row in reader:
-                rows.append(row)
-
-        failed = 0
-        for row in rows:
-            if self.get_shall_stop():
-                return
-            failed += 0 if compute_row(row) else 1
-            self.tick()
-
-        if failed > 0:
-            self.append_text(f"Computation of {failed} rows failed")
-
-        with open(filename, 'w') as outfile:
-            writer = csv.DictWriter(
-                    outfile, delimiter=',', fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            for row in rows:
-                writer.writerow(row)
 
 
 class TPM2AlgtestUI:
@@ -1024,7 +510,7 @@ class TPM2AlgtestUI:
         #  TODO: init to None
         self.out_dir = os.path.join(mkdtemp(), "tpm2-algtest", "algtest_result_" + str(uuid4()))
         os.makedirs(self.out_dir, exist_ok=True)
-        self.algtest_runner = AlgtestTestRunner(self.out_dir, lambda alive: self.busy_indicator.setAlive(alive))
+        self.algtest_runner = None
 
     def reset_ui_members(self):
         self.dialog = None
@@ -1231,7 +717,7 @@ class TPM2AlgtestUI:
         while self.dialog is not None and self.dialog.isOpen():
             ev = self.dialog.topmostDialog().waitForEvent(100)
 
-            if self.algtest_runner.is_finished() and self.dialog.topmostDialog() != self.popup and not self.result_stored:
+            if self.algtest_runner is not None and self.algtest_runner.is_finished() and self.dialog.topmostDialog() != self.popup and not self.result_stored:
                 self.algtest_runner.store_results(StoreType.STORE_USB)
                 self.result_stored = True
                 if self.shutdown_checkbox.isChecked() and self.algtest_runner.get_state() == AlgtestState.SUCCESS:
@@ -1262,17 +748,16 @@ class TPM2AlgtestUI:
                 if ev.widget() == self.stop_button:
                     self.algtest_runner.terminate()
                 elif ev.widget() in [self.start_short_button, self.start_extensive_button]:
+                    if self.algtest_runner is not None and self.algtest_runner.is_alive():
+                        continue
                     if self.store_button is not None:
                         self.store_button.parent().removeChild(self.store_button)
                         self.store_button = None
                         self.result_stored = False
 
-                    if self.algtest_runner.is_alive():
-                        self.algtest_runner.terminate()
-
                     self.out_dir = os.path.join(mkdtemp(), "tpm2-algtest", "algtest_result_" + str(uuid4()))
                     os.makedirs(self.out_dir, exist_ok=True)
-                    self.algtest_runner = AlgtestTestRunner(self.out_dir, lambda alive: self.busy_indicator.setAlive(alive))
+                    self.algtest_runner = AlgtestTestRunner(self.out_dir, ev.widget() == self.start_extensive_button, lambda alive: self.busy_indicator.setAlive(alive))
                     # self.algtest_runner.set_mail(self.email_field.value())
 
                     if ev.widget() == self.start_short_button:
@@ -1282,11 +767,6 @@ class TPM2AlgtestUI:
                         duration = EXTENSIVE_TEST_ITERATIONS
                         # 14MB
                         rng_iterations = 524288
-
-                    self.algtest_runner.schedule_test((TestType.CRYPTOOPS, duration))
-                    self.algtest_runner.schedule_test((TestType.RNG, rng_iterations))
-                    self.algtest_runner.schedule_test((TestType.PERFORMANCE, SHORT_TEST_ITERATIONS))
-                    self.algtest_runner.schedule_test((TestType.KEYGEN, duration))
 
                     self.algtest_runner.start()
                 elif ev.widget() == self.popup_cancel:
@@ -1317,7 +797,7 @@ class TPM2AlgtestUI:
                     self.construct_simple_ui()
 
             elif ev.eventType() == YEvent.TimeoutEvent:
-                if self.algtest_runner.get_info_changed():
+                if self.algtest_runner is not None and self.algtest_runner.get_info_changed():
                     self.progress_bar.setValue(self.algtest_runner.get_percentage())
                     if self.algtest_runner.get_text():
                         self.text.setText(self.algtest_runner.get_text())
