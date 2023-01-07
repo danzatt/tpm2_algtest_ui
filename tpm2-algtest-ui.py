@@ -29,6 +29,7 @@ IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
 RUN_ALGTEST_SCRIPT = "run_algtest.py"
 DEPOSITORY_UCO = 4085
+TCTII = "device:/dev/tpm0"
 INFO_MESSAGE = \
 """<b>Experiment</b>: Analysis of Trusted Platform Modules
 <b>Research institute</b>: CRoCS laboratory, Masaryk University and Red Hat
@@ -225,7 +226,8 @@ class AlgtestTestRunner(Thread):
         super().__init__(name="AlgtestTestRunner")
         self.out_dir = out_dir
         self.detail_dir = os.path.join(self.out_dir, 'detail')
-        self.cmd = [RUN_ALGTEST_SCRIPT, '--include-legacy', '--machine-readable-statuses', '--use-system-algtest', '--outdir', self.out_dir, "--with-image-tag", IMAGE_TAG]
+        self.cmd = [RUN_ALGTEST_SCRIPT, '--include-legacy', '--machine-readable-statuses', '--use-system-algtest',
+                    '--outdir', self.out_dir, "--with-image-tag", IMAGE_TAG, "--with-tctii", TCTII]
         self.extensive = extensive
 
         self.percentage = 0
@@ -301,12 +303,13 @@ class AlgtestTestRunner(Thread):
         if code != 0:
             if not self.get_shall_stop():
                 print("The run_algtest process failed. Please try to re-run the test.")
-                self.append_text("The run_algtest process failed. Please try to re-run the test.")
-                self.set_status("The run_algtest process failed.")
                 self.set_state(AlgtestState.FAILED)
                 self.tick(False)
                 self.format_results()
                 self.tick(False)
+                self.append_text("The run_algtest process failed. Please try to re-run the test.")
+                self.set_status("The run_algtest process failed. Please re-run the test.")
+                self.set_percentage(0)
             else:
                 self.set_status("Stop requested.")
                 self.set_state(AlgtestState.STOPPED)
