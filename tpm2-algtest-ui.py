@@ -24,7 +24,7 @@ import urllib.request
 from yui import YUI
 from yui import YEvent
 
-VERSION = 'v.0.5'
+VERSION = 'v.0.5.2'
 IMAGE_TAG = 'tpm2-algtest-ui ' + VERSION
 RESULT_PATH = "/mnt/algtest"
 RUN_ALGTEST_SCRIPT = "run_algtest.py"
