@@ -4,7 +4,7 @@
 Name:       {{{ git_dir_name }}}
 
 # git_dir_version returns version based on commit and tag history of the Git project
-Version:    0.5.3
+Version:    0.5.4
 
 Release:    1%{?dist}
 Summary:    GUI/TUI for tpm2-algtest
